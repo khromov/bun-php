@@ -79,4 +79,15 @@ export interface PhpPluginOptions {
   stdout?: StdoutMode;
   /** Which files to handle. Default `/\.php$/`. */
   filter?: RegExp;
+  /**
+   * Mount the project directory into the virtual filesystem so that sibling
+   * `require`s, `__DIR__` and Composer packages resolve. Default `true`.
+   */
+  mount?: boolean;
+  /**
+   * Path to a PHP file to require before the module, typically a Composer
+   * autoloader. Defaults to auto-detecting `vendor/autoload.php`; pass `false`
+   * to disable.
+   */
+  autoload?: string | false;
 }

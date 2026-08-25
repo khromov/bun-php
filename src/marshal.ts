@@ -45,7 +45,18 @@ export function encodeArgs(args: readonly unknown[]): string {
  * state (declared functions included) between runs, so the include is both
  * necessary and safe from redeclaration errors.
  */
-export function buildCallScript(modulePath: string, expression: string): string {
+export function buildCallScript(
+  modulePath: string,
+  expression: string,
+  autoloadPath?: string | null,
+): string {
+  // Composer's autoloader has to be registered again for every call, because
+  // php-wasm resets request-scoped state (including declared functions and
+  // registered autoloaders) between runs.
+  const prelude = autoloadPath
+    ? `    require_once ${phpVar(autoloadPath as never)};\n`
+    : "";
+
   return `<?php
 ini_set('html_errors', '0');
 $__bunphp_sent = false;
@@ -86,7 +97,7 @@ register_shutdown_function(function () use ($__bunphp_emit, &$__bunphp_sent) {
 });
 ob_start();
 try {
-    require_once ${phpVar(modulePath as never)};
+${prelude}    require_once ${phpVar(modulePath as never)};
     $__bunphp_v = ${expression};
     $__bunphp_emit(['ok' => true, 'v' => $__bunphp_v]);
 } catch (\\Throwable $e) {

@@ -6,7 +6,9 @@ import {
   encodeArgs,
   unwrapEnvelope,
 } from "./marshal";
-import { bootPhp, createRuntimeId } from "./php-runtime";
+import { bootPhp, createRuntimeId, nodeFsMountHandler } from "./php-runtime";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import type { PhpModuleApi, PhpModuleMeta, StdoutMode } from "./types";
 
 export interface CreatePhpModuleOptions {
@@ -18,6 +20,10 @@ export interface CreatePhpModuleOptions {
   functions: Record<string, string>;
   meta: PhpModuleMeta;
   stdout?: StdoutMode;
+  /** Host directory to mount into the virtual filesystem, if any. */
+  root?: string | null;
+  /** Composer autoloader to require before the module, if any. */
+  autoload?: string | null;
 }
 
 /**
@@ -40,11 +46,14 @@ class PhpInstance {
   #php: PHP | null = null;
   #booting: Promise<PHP> | null = null;
   #captured = "";
+  #mounted = false;
 
   constructor(
     readonly id: string,
     readonly source: string,
     readonly stdout: StdoutMode,
+    readonly root: string | null,
+    readonly autoload: string | null,
   ) {}
 
   /** Boot lazily, and only once even under concurrent first calls. */
@@ -56,18 +65,34 @@ class PhpInstance {
 
   async #boot(): Promise<PHP> {
     const php = await bootPhp();
-    // Mirror the real path inside the virtual filesystem so __FILE__ and
-    // __DIR__ report something recognisable.
-    const dir = this.id.slice(0, this.id.lastIndexOf("/")) || "/";
-    php.mkdir(dir);
-    php.writeFile(this.id, this.source);
+    await this.#populate(php);
     this.#php = php;
     return php;
   }
 
+  /**
+   * Make the PHP file reachable from inside the interpreter.
+   *
+   * Mounting the project directory is preferred: it is a live view of the host
+   * filesystem, so sibling `require`s, `__DIR__` and Composer's vendor tree all
+   * resolve. When the directory is not on disk — a bundle running elsewhere —
+   * the source inlined at build time is written instead, which keeps
+   * single-file modules working.
+   */
+  async #populate(php: PHP): Promise<void> {
+    if (this.root && existsSync(this.root)) {
+      php.mkdir(this.root);
+      await php.mount(this.root, nodeFsMountHandler(this.root));
+      this.#mounted = true;
+      return;
+    }
+    php.mkdir(dirname(this.id));
+    php.writeFile(this.id, this.source);
+  }
+
   async run(expression: string, label: string): Promise<unknown> {
     const php = await this.php();
-    const script = buildCallScript(this.id, expression);
+    const script = buildCallScript(this.id, expression, this.autoload);
 
     const response = await php.runStream({ code: script });
     const [raw, exitCode, stderr] = await Promise.all([
@@ -112,9 +137,12 @@ class PhpInstance {
   async reset(): Promise<void> {
     const php = await this.php();
     await php.hotSwapPHPRuntime(await createRuntimeId());
-    const dir = this.id.slice(0, this.id.lastIndexOf("/")) || "/";
-    php.mkdir(dir);
-    php.writeFile(this.id, this.source);
+    // php-wasm re-applies mounts across a runtime swap, so only the
+    // written-source fallback needs restoring.
+    if (!this.#mounted) {
+      php.mkdir(dirname(this.id));
+      php.writeFile(this.id, this.source);
+    }
     this.#captured = "";
   }
 
@@ -122,6 +150,7 @@ class PhpInstance {
     const php = this.#php;
     this.#php = null;
     this.#booting = null;
+    this.#mounted = false;
     instanceCache().delete(this.id);
     php?.exit();
   }
@@ -136,6 +165,8 @@ class PhpInstance {
 export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
   const { id, source, functions, meta } = options;
   const stdout = options.stdout ?? "inherit";
+  const root = options.root ?? null;
+  const autoload = options.autoload ?? null;
 
   const cache = instanceCache();
   let instance = cache.get(id);
@@ -145,7 +176,7 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
     instance = undefined;
   }
   if (!instance) {
-    instance = new PhpInstance(id, source, stdout);
+    instance = new PhpInstance(id, source, stdout, root, autoload);
     cache.set(id, instance);
   }
   const live = instance;

@@ -132,13 +132,16 @@ function convertDocPart(part: string): string {
     return safe + "[]".repeat(suffixDepth);
   }
 
-  // `array<int>` / `array<string, int>` / `list<int>`.
+  // `array<int>` / `array<string, int>` / `array<int, T>` / `list<int>`.
   const generic = /^(array|list|iterable)\s*<(.+)>$/i.exec(text);
   if (generic) {
     const args = splitGenericArgs(generic[2] ?? "");
     const value = args.length > 1 ? args[1] : args[0];
     const inner = value ? convertDocPart(value) : "PhpValue";
-    if (generic[1]?.toLowerCase() === "list" || args.length === 1) {
+    // Integer keys describe a list, so `array<int, T>` is `T[]` rather than a
+    // string-keyed record.
+    const keyed = args.length > 1 && !/^(int|integer)$/i.test((args[0] ?? "").trim());
+    if (!keyed) {
       const safe = inner.includes(" | ") ? `(${inner})` : inner;
       return `${safe}[]`;
     }

@@ -120,6 +120,43 @@ types every `.php` import as `any`:
 /// <reference types="bun-php/types" />
 ```
 
+## Multi-file projects and Composer
+
+bun-php mounts the project directory into the WebAssembly filesystem, so
+`require` of a sibling file, `__DIR__`, and Composer's autoloader all work:
+
+```php
+<?php
+// app/report.php
+use League\CommonMark\CommonMarkConverter;
+
+require_once __DIR__ . '/helpers.php';
+
+function report(string $markdown): string
+{
+    return (new CommonMarkConverter())->convert($markdown) . footer();
+}
+```
+
+```ts
+import { report } from "./app/report.php";
+await report("# Title");
+```
+
+The project root is found by walking up from the `.php` file looking for
+`vendor/autoload.php` or `composer.json`, the same way Composer resolves
+context; failing that, the file's own directory is used. When a
+`vendor/autoload.php` is found it is required before every call.
+
+The mount is a live view of the host filesystem — files written after the
+interpreter booted are visible, and PHP can write back to disk. See
+[`demos/`](demos/) for real packages (CommonMark, Carbon, ramsey/uuid,
+php-jwt, league/csv) exercised end to end.
+
+Because each call is a fresh PHP request, the autoloader is re-registered every
+time. Composer's autoloader is lazy, so this is cheap for packages you touch
+lightly.
+
 ## Module API
 
 The default export carries the interpreter controls:
@@ -154,6 +191,8 @@ Bun.build({
 | `dts` | `"auto"` | Write sidecar types. `"auto"` writes unless producing a bundle. |
 | `stdout` | `"inherit"` | Where PHP's `echo` output goes: `"inherit"`, `"capture"` (drain with `php.$output()`), or `"ignore"`. |
 | `filter` | `/\.php$/` | Which files to handle. |
+| `mount` | `true` | Mount the project directory so sibling `require`s and Composer resolve. |
+| `autoload` | auto | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables. |
 
 Note that the `bun build` **CLI** cannot use plugins at all — use the
 `Bun.build()` JS API, or `[serve.static] plugins = ["bun-php"]` for the dev
@@ -166,8 +205,8 @@ server.
    collects its top-level functions and constants.
 3. The plugin emits a JS module whose exports proxy into PHP.
 4. On the first call, [php-wasm](https://github.com/WordPress/wordpress-playground)
-   boots a PHP 8.5 interpreter (~120 ms) and the file is written to its virtual
-   filesystem. Later calls reuse that interpreter (~1 ms each).
+   boots a PHP 8.5 interpreter and the project directory is mounted into its
+   virtual filesystem. Later calls reuse that interpreter.
 5. Arguments are base64-JSON encoded into a generated PHP snippet; the return
    value comes back as JSON. PHP's own output is captured separately so it can
    never corrupt the result.
@@ -207,15 +246,13 @@ state on the JavaScript side.
   objects, and JS objects arrive in PHP as associative arrays (not `stdClass`).
 - **By-reference parameters (`&$x`) do not write back.** Arguments are passed by
   value; the generated types carry a JSDoc warning.
-- **Only the imported file is on the virtual filesystem.** `require` of a
-  sibling file will not resolve. Write extra files in yourself first:
-
-  ```ts
-  const raw = await php.$php();
-  raw.writeFile("/path/to/helper.php", await Bun.file("./helper.php").text());
-  ```
-
-- **No Composer or autoloading**, no networking, no Xdebug.
+- **Only the project directory is mounted.** A `require` pointing outside the
+  detected root will not resolve. Set `mount: false` to opt out of mounting
+  entirely, in which case only the imported file's own source is available.
+- **No networking and no Xdebug.** The bundled extensions are those in the
+  php-wasm build: `mbstring`, `openssl`, `hash`, `bcmath`, `dom`, `tokenizer`,
+  `gd`, `zip`, `curl`, `sqlite3` and friends. Notably **`intl` is absent**, so
+  packages requiring `ext-intl` will not load.
 - **PHP 8.5 only.** The runtime import is isolated in `src/php-runtime.ts`, so
   supporting other versions is a one-line change plus the matching
   `@php-wasm/node-X-Y` dependency.

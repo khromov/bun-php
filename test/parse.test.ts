@@ -169,6 +169,15 @@ describe("docblocks", () => {
     expect(signature(f)).toBe("(values: number[]) => Record<string, number>");
   });
 
+  test("integer-keyed generics are lists, not records", () => {
+    expect(fn(`/** @return array<int, string> */ function f() {}`).returnTsType)
+      .toBe("string[]");
+    expect(fn(`/** @return list<int> */ function f() {}`).returnTsType)
+      .toBe("number[]");
+    expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType)
+      .toBe("Record<string, number>");
+  });
+
   test("generics containing spaces are not truncated", () => {
     expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType)
       .toBe("Record<string, number>");

@@ -14,6 +14,8 @@ const build = (php: string) => {
       meta,
       runtimeSpecifier: "/runtime.ts",
       stdout: "inherit",
+      root: null,
+      autoload: null,
     }),
     dts: generateDts(meta, "mod.php"),
   };

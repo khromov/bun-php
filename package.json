@@ -25,7 +25,8 @@
   "scripts": {
     "test": "bun test",
     "example": "bun run example/index.ts",
-    "typecheck": "bunx --package typescript@5.9.2 tsc -p tsconfig.json"
+    "typecheck": "bunx --package typescript@5.9.2 tsc -p tsconfig.json",
+    "demos": "bun run demos/index.ts"
   },
   "dependencies": {
     "@php-wasm/node-8-5": "^3.1.51",

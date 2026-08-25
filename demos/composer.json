@@ -1,0 +1,25 @@
+{
+  "name": "bun-php/demos",
+  "description": "A small PHP package, exercised from Bun through bun-php",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.1",
+    "league/commonmark": "^2.0",
+    "nesbot/carbon": "^3.0",
+    "ramsey/uuid": "^4.0",
+    "firebase/php-jwt": "^7.0",
+    "league/csv": "^9.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Demo\\": "src/"
+    }
+  },
+  "config": {
+    "platform": {
+      "php": "8.5.8"
+    },
+    "sort-packages": true
+  }
+}

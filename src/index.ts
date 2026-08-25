@@ -2,6 +2,7 @@ import { phpPlugin } from "./plugin";
 
 export { phpPlugin } from "./plugin";
 export { parsePhp } from "./parse";
+export { resolveProject, type PhpProject } from "./project";
 export { generateModule } from "./codegen";
 export { generateDts } from "./dts";
 export { PhpError, PhpFatalError, PhpParseError } from "./errors";

@@ -2,6 +2,7 @@ import type { BunPlugin, OnLoadResult, PluginBuilder } from "bun";
 import { generateModule } from "./codegen";
 import { generateDts } from "./dts";
 import { parsePhp } from "./parse";
+import { resolveProject } from "./project";
 import type { PhpPluginOptions } from "./types";
 
 /**
@@ -20,6 +21,7 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
   const filter = options.filter ?? /\.php$/;
   const stdout = options.stdout ?? "inherit";
   const dtsMode = options.dts ?? "auto";
+  const shouldMount = options.mount ?? true;
 
   return {
     name: "bun-php",
@@ -33,6 +35,7 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
       build.onLoad({ filter }, async ({ path }): Promise<LoadResult> => {
         const source = await Bun.file(path).text();
         const meta = parsePhp(source, path);
+        const project = resolveProject(path, { autoload: options.autoload });
 
         if (writeDts) {
           await writeSidecar(path, meta, source);
@@ -45,6 +48,8 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
             meta,
             runtimeSpecifier: RUNTIME_PATH,
             stdout,
+            root: shouldMount ? project.root : null,
+            autoload: project.autoload,
           }),
           loader: "js",
           resolveDir: path.slice(0, path.lastIndexOf("/")) || "/",

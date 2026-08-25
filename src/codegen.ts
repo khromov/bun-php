@@ -29,11 +29,15 @@ export interface CodegenOptions {
   /** Module specifier (or absolute path) for `bun-php`'s runtime. */
   runtimeSpecifier: string;
   stdout: StdoutMode;
+  /** Host directory to mount into the virtual filesystem, if any. */
+  root: string | null;
+  /** Composer autoloader to require before the module, if any. */
+  autoload: string | null;
 }
 
 /** Generate the JavaScript module that a `.php` import resolves to. */
 export function generateModule(options: CodegenOptions): string {
-  const { path, source, meta, runtimeSpecifier, stdout } = options;
+  const { path, source, meta, runtimeSpecifier, stdout, root, autoload } = options;
 
   const functions = Object.fromEntries(
     meta.functions.map((fn) => [fn.exportName, fn.phpName]),
@@ -49,6 +53,8 @@ export function generateModule(options: CodegenOptions): string {
     `  functions: ${JSON.stringify(functions)},`,
     `  meta: ${JSON.stringify(meta)},`,
     `  stdout: ${JSON.stringify(stdout)},`,
+    `  root: ${JSON.stringify(root)},`,
+    `  autoload: ${JSON.stringify(autoload)},`,
     `});`,
     "",
     "export default __mod;",
