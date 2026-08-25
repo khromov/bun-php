@@ -14,6 +14,7 @@ import tokens, { signToken, verifyToken } from "./php/tokens.php";
 import csv, { buildCsv, parseCsv } from "./php/csv.php";
 import inventory, { priceBasket } from "./php/inventory.php";
 import images, { imageInfo, thumbnail, toWebp } from "./php/images.php";
+import info, { phpInfoHtml, runtimeSummary } from "./php/info.php";
 
 const installed = existsSync(join(import.meta.dir, "vendor", "autoload.php"));
 
@@ -29,7 +30,7 @@ beforeAll(() => {
 afterAll(async () => {
   if (!installed) return;
   await Promise.all(
-    [markdown, dates, ids, tokens, csv, inventory, images].map((m) =>
+    [markdown, dates, ids, tokens, csv, inventory, images, info].map((m) =>
       m.$dispose().catch(() => {}),
     ),
   );
@@ -199,6 +200,30 @@ describe("ext-gd", () => {
     expect(imageInfo(join(import.meta.dir, "composer.json"))).rejects.toThrow(
       /Not a readable image/,
     );
+  });
+});
+
+describe("phpinfo", () => {
+  test("renders a full HTML page", async () => {
+    const html = await phpInfoHtml();
+    expect(html).toContain("<!DOCTYPE html");
+    expect(html).toMatch(/<body[^>]*>/i);
+    expect(html).toContain("PHP Version 8.5");
+    // The page the `bun run phpinfo` server serves.
+    expect(html.length).toBeGreaterThan(50_000);
+  });
+
+  test("reports the WebAssembly SAPI", async () => {
+    const summary = (await runtimeSummary()) as {
+      php: string;
+      sapi: string;
+      extensions: number;
+      memory_limit: string;
+    };
+    expect(summary.php).toStartWith("8.5");
+    expect(summary.sapi).toBe("wasm");
+    expect(summary.extensions).toBeGreaterThan(30);
+    expect(summary.memory_limit).toBe("256M");
   });
 });
 

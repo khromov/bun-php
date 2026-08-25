@@ -13,6 +13,7 @@ resolves exactly as it would under `php-fpm` or the CLI.
 ```bash
 composer install --working-dir=demos   # from the repository root
 bun run demos                          # run every demo
+bun run phpinfo                        # serve phpinfo() on http://localhost:8080
 bun test demos/demos.test.ts           # assert they all still work
 ```
 
@@ -30,6 +31,7 @@ reproducible.
 | `php/csv.php` | `league/csv` | Streaming reader/writer over strings |
 | `php/images.php` | `ext-gd` | Decoding, resizing and re-encoding real files on disk |
 | `php/inventory.php` | `Demo\Inventory` | The package's **own** PSR-4 classes, which themselves use `ramsey/uuid` |
+| `php/info.php` | — | `phpinfo()`, served over HTTP by `bun run phpinfo` |
 
 ## Things worth noticing
 
@@ -58,6 +60,12 @@ GD here is 2.3.3 with JPEG, PNG, WebP, AVIF and GIF support. One quirk worth
 knowing: `imagescale()` rejects `IMG_BICUBIC_FIXED` in this build, so the demo
 uses the default interpolation. `imagedestroy()` is also deprecated as of PHP
 8.5 and has had no effect since 8.0.
+
+**`bun run phpinfo` serves the real page.** `Bun.serve()` on port 8080 hands
+back the output of PHP's own `phpinfo()`, with a header noting what produced
+it. Worth a look for what it reports: *Server API: PHP WASM SAPI (JSPI)*,
+confirming the faster JavaScript Promise Integration path rather than
+Asyncify. Set `PORT` to use a different port.
 
 **Types come from the PHP signatures.** `idVersion(string $uuid): ?int` becomes
 `idVersion(uuid: string): Promise<number | null>` in the generated
