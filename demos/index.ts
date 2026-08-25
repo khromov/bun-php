@@ -12,6 +12,7 @@ import { signToken, verifyToken } from "./php/tokens.php";
 import { buildCsv, parseCsv } from "./php/csv.php";
 import type { PhpError } from "bun-php";
 import { priceBasket } from "./php/inventory.php";
+import { imageInfo, thumbnail, toWebp } from "./php/images.php";
 
 function heading(title: string, packageName: string): void {
   console.log(`\n\x1b[1m${title}\x1b[0m \x1b[2m— ${packageName}\x1b[0m`);
@@ -49,6 +50,22 @@ heading("CSV", "league/csv");
 const records = await parseCsv("name,qty\nwidget,3\ngadget,12");
 console.log("parsed:", records);
 console.log("built:\n" + (await buildCsv(["name", "qty"], [["widget", 3], ["gadget", 12]])));
+
+heading("Images", "ext-gd");
+// The project directory is mounted, so PHP reads and writes real files here.
+const images = `${import.meta.dir}/images`;
+const source = `${images}/mochi-1.jpg`;
+type Info = { width: number; height: number; mime: string; bytes: number };
+type Resized = { from: Info; to: Info; bytes: number };
+
+const original = (await imageInfo(source)) as Info;
+console.log(`source:    ${original.width}x${original.height} ${original.mime} ${(original.bytes / 1024 / 1024).toFixed(1)}MB`);
+
+const resized = (await thumbnail(source, `${images}/mochi-1-thumbnail.jpg`, 320)) as Resized;
+console.log(`thumbnail: ${resized.to.width}x${resized.to.height} jpeg ${(resized.bytes / 1024).toFixed(1)}KB -> images/mochi-1-thumbnail.jpg`);
+
+const webp = (await toWebp(`${images}/mochi-1-thumbnail.jpg`, `${images}/mochi-1-thumbnail.webp`)) as { bytes: number };
+console.log(`converted: ${webp.bytes} bytes webp -> images/mochi-1-thumbnail.webp`);
 
 heading("First-party classes", "Demo\\Inventory via PSR-4");
 // `priceBasket` is declared `: array` in PHP, which is as specific as a type

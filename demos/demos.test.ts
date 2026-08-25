@@ -4,6 +4,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import markdown, { renderGfm, renderMarkdown } from "./php/markdown.php";
@@ -12,6 +13,7 @@ import ids, { idVersion, randomId, stableId } from "./php/ids.php";
 import tokens, { signToken, verifyToken } from "./php/tokens.php";
 import csv, { buildCsv, parseCsv } from "./php/csv.php";
 import inventory, { priceBasket } from "./php/inventory.php";
+import images, { imageInfo, thumbnail, toWebp } from "./php/images.php";
 
 const installed = existsSync(join(import.meta.dir, "vendor", "autoload.php"));
 
@@ -27,7 +29,9 @@ beforeAll(() => {
 afterAll(async () => {
   if (!installed) return;
   await Promise.all(
-    [markdown, dates, ids, tokens, csv, inventory].map((m) => m.$dispose().catch(() => {})),
+    [markdown, dates, ids, tokens, csv, inventory, images].map((m) =>
+      m.$dispose().catch(() => {}),
+    ),
   );
 });
 
@@ -126,6 +130,75 @@ describe("league/csv", () => {
 
   test("builds CSV text", async () => {
     expect(await buildCsv(["name", "qty"], [["widget", 3]])).toBe("name,qty\nwidget,3");
+  });
+});
+
+describe("ext-gd", () => {
+  // Outputs land in demos/images/, which is gitignored for *-thumbnail.*
+  const dir = join(import.meta.dir, "images");
+  const source = join(dir, "mochi-1.jpg");
+  const jpegOut = join(dir, "test-thumbnail.jpg");
+  const webpOut = join(dir, "test-thumbnail.webp");
+
+  type Info = { width: number; height: number; mime: string; bytes: number };
+  type Resized = { from: Info; to: Info; bytes: number };
+
+  afterAll(async () => {
+    await Promise.all([
+      rm(jpegOut, { force: true }),
+      rm(webpOut, { force: true }),
+    ]);
+  });
+
+  test("reads the source image through the mounted directory", async () => {
+    const info = (await imageInfo(source)) as Info;
+    expect(info.mime).toBe("image/jpeg");
+    expect(info.width).toBe(5184);
+    expect(info.height).toBe(3456);
+  });
+
+  test("writes a resized JPEG back to the host filesystem", async () => {
+    const result = (await thumbnail(source, jpegOut, 320)) as Resized;
+
+    expect(result.to.width).toBe(320);
+    // 5184x3456 is 3:2, so the height follows the aspect ratio.
+    expect(result.to.height).toBe(213);
+    expect(await Bun.file(jpegOut).exists()).toBe(true);
+
+    // Far smaller than the 3MB original.
+    expect(result.bytes).toBeLessThan(50_000);
+  });
+
+  test("the written file is a real JPEG", async () => {
+    await thumbnail(source, jpegOut, 200);
+    const bytes = new Uint8Array(await Bun.file(jpegOut).arrayBuffer());
+    // SOI marker.
+    expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xff, 0xd8, 0xff]);
+
+    const info = (await imageInfo(jpegOut)) as Info;
+    expect(info.width).toBe(200);
+  });
+
+  test("never scales an image up", async () => {
+    await thumbnail(source, jpegOut, 320);
+    const result = (await thumbnail(jpegOut, jpegOut, 4000)) as Resized;
+    expect(result.to.width).toBe(320);
+  });
+
+  test("converts to WebP", async () => {
+    await thumbnail(source, jpegOut, 320);
+    const result = (await toWebp(jpegOut, webpOut)) as { bytes: number; mime: string };
+
+    expect(result.mime).toBe("image/webp");
+    const bytes = new Uint8Array(await Bun.file(webpOut).arrayBuffer());
+    expect(new TextDecoder().decode(bytes.slice(0, 4))).toBe("RIFF");
+    expect(new TextDecoder().decode(bytes.slice(8, 12))).toBe("WEBP");
+  });
+
+  test("rejects a file that is not an image", async () => {
+    expect(imageInfo(join(import.meta.dir, "composer.json"))).rejects.toThrow(
+      /Not a readable image/,
+    );
   });
 });
 

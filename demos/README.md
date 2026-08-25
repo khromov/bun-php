@@ -28,6 +28,7 @@ reproducible.
 | `php/ids.php` | `ramsey/uuid` | Random v4 and deterministic v5 UUIDs |
 | `php/tokens.php` | `firebase/php-jwt` | HMAC signing and verification via `ext-hash` |
 | `php/csv.php` | `league/csv` | Streaming reader/writer over strings |
+| `php/images.php` | `ext-gd` | Decoding, resizing and re-encoding real files on disk |
 | `php/inventory.php` | `Demo\Inventory` | The package's **own** PSR-4 classes, which themselves use `ramsey/uuid` |
 
 ## Things worth noticing
@@ -46,6 +47,17 @@ PhpError: signToken: DomainException: Provided key is too short
 project surfaced a `league/csv` deprecation notice that way, which is how the
 demo came to use `Reader::fromString()` rather than the deprecated
 `createFromString()`.
+
+**PHP reads and writes real files.** Because the project directory is mounted
+rather than copied, `php/images.php` opens `images/mochi-1.jpg` (5184x3456,
+3.0 MB) with GD and writes `images/mochi-1-thumbnail.jpg` (320x213, ~14 KB)
+straight back to disk, then converts it to WebP. The generated files are
+gitignored; the source photo is committed.
+
+GD here is 2.3.3 with JPEG, PNG, WebP, AVIF and GIF support. One quirk worth
+knowing: `imagescale()` rejects `IMG_BICUBIC_FIXED` in this build, so the demo
+uses the default interpolation. `imagedestroy()` is also deprecated as of PHP
+8.5 and has had no effect since 8.0.
 
 **Types come from the PHP signatures.** `idVersion(string $uuid): ?int` becomes
 `idVersion(uuid: string): Promise<number | null>` in the generated
@@ -66,6 +78,7 @@ Measured on this machine (Bun 1.4, PHP 8.5.8 via JSPI):
 | Plain function, no Composer | ~210 ms | ~1 ms |
 | `ramsey/uuid` | ~770 ms | ~8 ms |
 | `league/commonmark` | ~760 ms | ~20 ms |
+| `ext-gd` resize of an 18 MP JPEG | — | ~250 ms |
 
 The cold cost is booting WebAssembly plus registering the autoloader and
 loading classes. Warm cost tracks how much work the library does per call —
