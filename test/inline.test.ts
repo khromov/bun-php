@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { PhpError } from "../src/errors";
 import { BunPHP } from "../src/inline";
 
@@ -8,12 +8,14 @@ afterAll(async () => {
 
 describe("result", () => {
   test("printed output comes back as a string", async () => {
-    expect(await BunPHP`<?php echo "Hello world";`).toBe("Hello world");
+    expect(await BunPHP.capture`<?php echo "Hello world";`).toBe("Hello world");
   });
 
   test("a top-level return wins over output", async () => {
     expect(await BunPHP`<?php return 40 + 2;`).toBe(42);
-    expect(await BunPHP`<?php echo "ignored"; return "returned";`).toBe("returned");
+    expect(await BunPHP.capture`<?php echo "ignored"; return "returned";`).toBe(
+      "returned",
+    );
   });
 
   test("falsy return values are preserved", async () => {
@@ -31,11 +33,76 @@ describe("result", () => {
   });
 
   test("a snippet with neither output nor return resolves to an empty string", async () => {
-    expect(await BunPHP`<?php $unused = 1;`).toBe("");
+    expect(await BunPHP.capture`<?php $unused = 1;`).toBe("");
   });
 
   test("a snippet ending in a line comment still runs", async () => {
     expect(await BunPHP`<?php return 7; // done`).toBe(7);
+  });
+});
+
+describe("output", () => {
+  /** Run something, returning whatever it wrote to the terminal. */
+  async function printed(run: () => Promise<unknown>): Promise<string> {
+    const chunks: string[] = [];
+    const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+
+    try {
+      await run();
+    } finally {
+      write.mockRestore();
+    }
+
+    return chunks.join("");
+  }
+
+  test("echo reaches the terminal, as it does from an imported .php file", async () => {
+    expect(await printed(() => BunPHP`<?php echo "Hello world";`)).toBe("Hello world");
+  });
+
+  test("a printing snippet resolves to null, not to its output", async () => {
+    let value: unknown = "unset";
+    await printed(async () => {
+      value = await BunPHP`<?php echo "Hello world";`;
+    });
+    expect(value).toBeNull();
+  });
+
+  test("a return still wins, and is not printed", async () => {
+    let value: unknown;
+    const out = await printed(async () => {
+      value = await BunPHP`<?php return 40 + 2;`;
+    });
+    expect(value).toBe(42);
+    expect(out).toBe("");
+  });
+
+  test("capture takes the output instead of printing it", async () => {
+    let value: unknown;
+    const out = await printed(async () => {
+      value = await BunPHP.capture`<?php echo "Hello world";`;
+    });
+    expect(value).toBe("Hello world");
+    expect(out).toBe("");
+  });
+
+  test("output produced before a throw is still printed", async () => {
+    const out = await printed(async () => {
+      await expect(
+        BunPHP`<?php echo "before"; throw new RuntimeException("x");`,
+      ).rejects.toThrow();
+    });
+    expect(out).toBe("before");
+  });
+
+  test("a throwing snippet does not leave its output for the next one", async () => {
+    await expect(
+      BunPHP.capture`<?php echo "leaked"; throw new RuntimeException("x");`,
+    ).rejects.toThrow();
+    expect(await BunPHP.capture`<?php echo "clean";`).toBe("clean");
   });
 });
 
@@ -46,8 +113,8 @@ describe("open and close tags", () => {
   });
 
   test("the closing tag is optional", async () => {
-    expect(await BunPHP`<?php echo "Hello world";`).toBe("Hello world");
-    expect(await BunPHP`<?php echo "Hello world"; ?>`).toBe("Hello world");
+    expect(await BunPHP.capture`<?php echo "Hello world";`).toBe("Hello world");
+    expect(await BunPHP.capture`<?php echo "Hello world"; ?>`).toBe("Hello world");
   });
 
   test("a closing tag works with a return too", async () => {
@@ -56,24 +123,26 @@ describe("open and close tags", () => {
   });
 
   test("PHP eats a single newline after the closing tag", async () => {
-    expect(await BunPHP`<?php echo "hi"; ?>`).toBe("hi");
+    expect(await BunPHP.capture`<?php echo "hi"; ?>`).toBe("hi");
   });
 
   test("a closing tag without an opening one still works", async () => {
-    expect(await BunPHP`echo "a"; ?>`).toBe("a");
+    expect(await BunPHP.capture`echo "a"; ?>`).toBe("a");
   });
 
   test("the short echo tag works, closed or not", async () => {
-    expect(await BunPHP`<?= 6 * 7;`).toBe("42");
-    expect(await BunPHP`<?= 6 * 7 ?>`).toBe("42");
+    expect(await BunPHP.capture`<?= 6 * 7;`).toBe("42");
+    expect(await BunPHP.capture`<?= 6 * 7 ?>`).toBe("42");
   });
 
   test("markup before the first tag is emitted, as in a PHP file", async () => {
-    expect(await BunPHP`<p>a</p><?php echo "b";`).toBe("<p>a</p>b");
+    expect(await BunPHP.capture`<p>a</p><?php echo "b";`).toBe("<p>a</p>b");
   });
 
   test("a snippet can switch modes repeatedly", async () => {
-    expect(await BunPHP`<?php echo "a"; ?><i>b</i><?php echo "c";`).toBe("a<i>b</i>c");
+    expect(await BunPHP.capture`<?php echo "a"; ?><i>b</i><?php echo "c";`).toBe(
+      "a<i>b</i>c",
+    );
   });
 
   test("code after a closing tag can still return a value", async () => {
@@ -81,7 +150,7 @@ describe("open and close tags", () => {
   });
 
   test("interpolation works inside markup", async () => {
-    expect(await BunPHP`<b><?= ${"safe"} ?></b>`).toContain("<b>safe</b>");
+    expect(await BunPHP.capture`<b><?= ${"safe"} ?></b>`).toContain("<b>safe</b>");
   });
 });
 
@@ -91,7 +160,7 @@ describe("interpolation", () => {
     expect(await BunPHP`<?php return ${42};`).toBe(42);
     expect(await BunPHP`<?php return ${1.5};`).toBe(1.5);
     expect(await BunPHP`<?php return ${true};`).toBe(true);
-    expect(await BunPHP`<?php return ${null};`).toBe("");
+    expect(await BunPHP`<?php return ${null};`).toBeNull();
     expect(await BunPHP`<?php return ${[1, 2]};`).toEqual([1, 2]);
     expect(await BunPHP`<?php return ${{ k: "v" }};`).toEqual({ k: "v" });
   });
@@ -152,20 +221,25 @@ describe("errors", () => {
   });
 
   test("a syntax error rejects without killing the interpreter", async () => {
-    expect(BunPHP`<?php this is not php`).rejects.toThrow();
+    // Captured, or PHP's parse-error page prints through the test output.
+    await expect(BunPHP.capture`<?php this is not php`).rejects.toThrow();
     expect(await BunPHP`<?php return "still working";`).toBe("still working");
   });
 
-  test("calling it as a plain function is refused", async () => {
+  test("calling either tag as a plain function is refused", async () => {
     // @ts-expect-error deliberately misusing the tag
-    expect(BunPHP("<?php echo 1;")).rejects.toThrow(/tagged template/);
+    await expect(BunPHP("<?php echo 1;")).rejects.toThrow(/tagged template/);
+    // @ts-expect-error deliberately misusing the tag
+    await expect(BunPHP.capture("<?php echo 1;")).rejects.toThrow(
+      /BunPHP\.capture is a tagged template/,
+    );
   });
 });
 
 describe("concurrency", () => {
   test("overlapping snippets do not mix up their output", async () => {
     const results = await Promise.all(
-      Array.from({ length: 12 }, (_, i) => BunPHP`<?php echo ${`v${i}`};`),
+      Array.from({ length: 12 }, (_, i) => BunPHP.capture`<?php echo ${`v${i}`};`),
     );
     expect(results).toEqual(Array.from({ length: 12 }, (_, i) => `v${i}`));
   });

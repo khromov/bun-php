@@ -1,5 +1,7 @@
 <?php
 
+define('yield', 'coroutine');
+
 function delete(string $what): string
 {
     return "deleted $what";

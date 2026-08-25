@@ -5,7 +5,8 @@ import type { PhpModuleApi } from "./types";
 /**
  * Run PHP written inline, without a `.php` file:
  *
- *     await BunPHP`<?php echo "Hello world";`;
+ *     await BunPHP`<?php echo "Hello world";`;          // prints "Hello world"
+ *     await BunPHP.capture`<?php echo "Hello world";`;  // "Hello world"
  *
  * Unlike importing a `.php` file, this needs no plugin registration — it is a
  * plain runtime API, so it works without the `preload` entry in bunfig.toml.
@@ -26,7 +27,12 @@ function instance(): PhpModuleApi {
     meta: { functions: [], constants: [], skipped: [] },
     root: null,
     autoload: null,
-    // Output is returned to the caller rather than printed.
+    // "capture" whichever tag is in use: the two differ only in what they do
+    // with the drained text, and `runtime.ts` writes `inherit` output once the
+    // request has already finished, so printing it here is the same thing
+    // observably. One mode keeps both tags on one interpreter — asking for
+    // "inherit" under a second id would boot a second WebAssembly runtime for
+    // no behavioural gain.
     stdout: "capture",
   });
 
@@ -125,8 +131,52 @@ function toClosureBody(code: string): string {
   return body;
 }
 
+/**
+ * Evaluate a snippet, either printing what it prints or handing it back.
+ *
+ * `capture: false` matches how an imported `.php` file behaves — PHP's `echo`
+ * reaches the terminal, and the snippet's value is its top-level `return`.
+ */
+function evaluate(
+  strings: TemplateStringsArray,
+  values: unknown[],
+  capture: boolean,
+  name: string,
+): Promise<any> {
+  if (!Array.isArray(strings) || !("raw" in Object(strings))) {
+    return Promise.reject(
+      new TypeError(
+        `${name} is a tagged template: write ${name}\`<?php ... \` rather than ${name}(...)`,
+      ),
+    );
+  }
+
+  return enqueue(async () => {
+    // Composed inside the task so an interpolation that cannot be encoded
+    // rejects the returned promise instead of throwing synchronously.
+    const code = toClosureBody(compose(strings, values));
+    const module = instance();
+    let value: unknown;
+    let output = "";
+
+    try {
+      value = await module.$eval(code);
+    } finally {
+      // Drained even when the snippet threw, since PHP emits whatever it
+      // managed to print before the throw — left in the buffer, that output
+      // would surface as part of whichever snippet ran next.
+      output = module.$output();
+      if (!capture && output) process.stdout.write(output);
+    }
+
+    return capture ? (value ?? output) : value;
+  });
+}
+
 export interface BunPHPTag {
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<any>;
+  /** Evaluate a snippet, returning its output instead of printing it. */
+  capture(strings: TemplateStringsArray, ...values: unknown[]): Promise<any>;
   /** Shut the inline interpreter down and release it. */
   dispose(): Promise<void>;
   /** The underlying module, for `$php()` and friends. */
@@ -134,38 +184,42 @@ export interface BunPHPTag {
 }
 
 /**
- * Evaluate a PHP snippet.
+ * Evaluate a PHP snippet, printing whatever it prints.
  *
- * Resolves to the value of a top-level `return`, or to whatever the snippet
- * printed when it does not return one:
+ * Output goes to the terminal, as it does for an imported `.php` file and for
+ * PHP itself; the promise resolves to the value of a top-level `return`, or to
+ * `null` — PHP's own answer for a closure that returns nothing — when there is
+ * no `return`:
  *
- *     await BunPHP`<?php echo "Hello world";`;   // "Hello world"
+ *     await BunPHP`<?php echo "Hello world";`;   // prints; resolves to null
  *     await BunPHP`<?php return 40 + 2;`;        // 42
+ *
+ * Use `BunPHP.capture` to take the output as a value instead.
  */
 export const BunPHP: BunPHPTag = Object.assign(
   function BunPHP(
     strings: TemplateStringsArray,
     ...values: unknown[]
   ): Promise<any> {
-    if (!Array.isArray(strings) || !("raw" in Object(strings))) {
-      return Promise.reject(
-        new TypeError(
-          "BunPHP is a tagged template: write BunPHP`<?php ... ` rather than BunPHP(...)",
-        ),
-      );
-    }
-
-    return enqueue(async () => {
-      // Composed inside the task so an interpolation that cannot be encoded
-      // rejects the returned promise instead of throwing synchronously.
-      const code = toClosureBody(compose(strings, values));
-      const module = instance();
-      const value = await module.$eval(code);
-      const output = module.$output();
-      return value ?? output;
-    });
+    return evaluate(strings, values, false, "BunPHP");
   },
   {
+    /**
+     * Evaluate a PHP snippet and resolve to what it printed.
+     *
+     * Nothing reaches the terminal. A top-level `return` still wins over the
+     * output, so a snippet that returns nothing resolves to its output, and one
+     * that prints nothing resolves to an empty string:
+     *
+     *     await BunPHP.capture`<?php echo "Hello world";`;   // "Hello world"
+     *     await BunPHP.capture`<?php return 40 + 2;`;        // 42
+     */
+    capture(
+      strings: TemplateStringsArray,
+      ...values: unknown[]
+    ): Promise<any> {
+      return evaluate(strings, values, true, "BunPHP.capture");
+    },
     async dispose(): Promise<void> {
       const module = inlineModule;
       inlineModule = null;

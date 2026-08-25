@@ -1,10 +1,17 @@
 import type { PhpModuleMeta, StdoutMode } from "./types";
 
 /**
- * Words that cannot be used as a `const` binding name. They are still valid as
- * *export* names, so a PHP `function delete()` is bound to a safe local and
- * re-exported under its original name. `arguments` and `eval` are not reserved
- * words, but strict mode (which every ES module is in) forbids binding them.
+ * Names the generated module cannot use as a `const` binding: ECMAScript's
+ * reserved words, the strict-mode-only additions (a module is always strict
+ * code), and the restricted bindings `arguments` and `eval`. This is
+ * deliberately the JavaScript list, not PHP's: PHP's keyword list only decides
+ * what can *reach* codegen — `define()` accepts every one of these as a
+ * constant name, and PHP even allows a few (`arguments`, `await`, `let`,
+ * `enum`, `true`, ...) as function names. All of them are still valid *export*
+ * names, so `function delete()` binds to a safe local and re-exports under its
+ * original name. Note Bun's transpiler tolerates the strict-mode-only subset
+ * (`implements` ... `yield`), but its module loader rejects them, as does any
+ * spec-compliant engine a bundle might target — keep them here.
  */
 const RESERVED = new Set([
   "arguments", "await", "break", "case", "catch", "class", "const", "continue",

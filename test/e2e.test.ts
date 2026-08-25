@@ -21,7 +21,7 @@ import php, {
   withDefault,
   withShutdown,
 } from "./fixtures/e2e.php";
-import reserved from "./fixtures/reserved.php";
+import reserved, { yield as yieldConstant } from "./fixtures/reserved.php";
 
 afterAll(async () => {
   await php.$dispose();
@@ -113,6 +113,13 @@ describe("reserved words", () => {
 
   test("and is reachable on the default export", async () => {
     expect(await reserved.class_of("x")).toBe("x");
+  });
+
+  test("a strict-mode-only reserved name survives the real module loader", () => {
+    // Bun's transpiler tolerates `const yield`, but its module loader (and
+    // every spec-compliant engine) rejects it; this import only resolves
+    // because codegen re-exports the constant through an alias.
+    expect(yieldConstant).toBe("coroutine");
   });
 });
 

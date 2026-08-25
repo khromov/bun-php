@@ -170,3 +170,56 @@ describe("generated .d.ts", () => {
     expect(dts).toContain("type PhpArray =");
   });
 });
+
+/**
+ * Every name a module cannot bind: ECMAScript reserved words, the strict-mode
+ * additions, and the restricted `arguments`/`eval`. Kept in sync with RESERVED
+ * in codegen.ts by the assertions below rather than by exporting the set.
+ */
+const STRICT_MODE_INVALID = [
+  "arguments", "await", "break", "case", "catch", "class", "const", "continue",
+  "debugger", "default", "delete", "do", "else", "enum", "eval", "export",
+  "extends", "false", "finally", "for", "function", "if", "implements", "import",
+  "in", "instanceof", "interface", "let", "new", "null", "package", "private",
+  "protected", "public", "return", "static", "super", "switch", "this", "throw",
+  "true", "try", "typeof", "var", "void", "while", "with", "yield",
+];
+
+describe("reserved word coverage", () => {
+  const transpiles = (js: string) =>
+    expect(() => new Bun.Transpiler({ loader: "js" }).transformSync(js)).not.toThrow();
+
+  test("every reserved word arriving via define() is aliased, never bound", () => {
+    // PHP's define() accepts any string, so all of these are reachable.
+    for (const word of STRICT_MODE_INVALID) {
+      const { js } = build(`define('${word}', 1);`);
+      if (word === "default") {
+        // Already claimed by the module's own default export.
+        expect(js).toContain("collides");
+        continue;
+      }
+      expect(js).not.toContain(`export const ${word} `);
+      expect(js).toContain(`export { __phpConst_${word} as ${JSON.stringify(word)} };`);
+      transpiles(js);
+    }
+  });
+
+  test("reserved words PHP accepts as function names take the alias path", () => {
+    let reachable = 0;
+    for (const word of STRICT_MODE_INVALID) {
+      let js: string;
+      try {
+        js = build(`function ${word}() {}`).js;
+      } catch {
+        continue; // Also a PHP keyword: it can never reach codegen this way.
+      }
+      reachable++;
+      expect(js).not.toContain(`export const ${word} `);
+      expect(js).toContain(`export { __phpFn_${word} as ${JSON.stringify(word)} };`);
+      transpiles(js);
+    }
+    // arguments, await, debugger, delete, enum, let, this, true, ... are all
+    // legal PHP function names; make sure the loop actually exercised them.
+    expect(reachable).toBeGreaterThanOrEqual(15);
+  });
+});

@@ -343,6 +343,13 @@ describe("constant evaluation follows PHP semantics", () => {
 });
 
 describe("errors", () => {
+  test("known limitation: php-parser rejects `function readonly()`", () => {
+    // Real PHP 8.5 allows `readonly` as a function name; php-parser 3.7.0
+    // does not. If this test starts failing after a php-parser upgrade, the
+    // limitation is gone: delete this test and the README note.
+    expect(() => parse(`function readonly() {}`)).toThrow(PhpParseError);
+  });
+
   test("a syntax error becomes a PhpParseError with a line number", () => {
     expect(() => parsePhp("<?php function {", "/virtual/bad.php")).toThrow(
       PhpParseError,

@@ -64,13 +64,16 @@ uses the default interpolation. `imagedestroy()` is also deprecated as of PHP
 
 **No `.php` file is required.** `demos/inline.ts` evaluates a snippet through
 the `` BunPHP`...` `` tagged template, which is a plain runtime API — it needs
-neither the plugin nor the `preload` entry, and a snippet that prints resolves
-to what it printed:
+neither the plugin nor the `preload` entry. PHP prints for itself, so nothing
+on the JavaScript side has to relay the output:
 
 ```ts
 import { BunPHP } from "bun-php";
-console.log(await BunPHP`<?php echo "Hello from PHP!"; ?>`);   // Hello from PHP!
+await BunPHP`<?php echo "Hello from PHP!", PHP_EOL; ?>`;   // Hello from PHP!
 ```
+
+`BunPHP.capture` is the other half: it prints nothing and resolves to the
+output instead.
 
 **`bun run phpinfo` serves the real page.** `Bun.serve()` on port 8080 hands
 back the output of PHP's own `phpinfo()`, with a header noting what produced

@@ -87,15 +87,27 @@ elsewhere). Mounts survive `hotSwapPHPRuntime`, so `$reset()` must *not* re-moun
 **Composer's autoloader is re-required on every call** (`buildCallScript`), because request state resets. This
 is why `demos/` works at all, and why warm-call cost tracks how much the library does per call.
 
+**The inline tag prints; `BunPHP.capture` returns.** `BunPHP` matches the plugin's `stdout: "inherit"`
+default — `echo` goes to the terminal and the promise resolves to the top-level `return` (or `null`) — while
+`BunPHP.capture` resolves to the output and prints nothing. Both share *one* interpreter, created with
+`stdout: "capture"`: `runtime.ts` writes `inherit` output only once the request has finished, so having the
+tag print the drained text is observably identical and avoids booting a second WebAssembly runtime. The drain
+lives in a `finally`, or a snippet that throws mid-output would leave its text to surface inside the next one.
+
 **Inline snippets interpolate as expressions, not text.** `src/inline.ts` runs every interpolated value
-through `phpVar()`, so a value can never be executed as code; `test/inline.test.ts` asserts that with real
-injection payloads. It also strips a leading open tag (the snippet is evaluated inside a closure) and
+through `encodeValue()` from `marshal.ts`, so a value can never be executed as code (and `undefined`/BigInt
+edge cases get named errors); `test/inline.test.ts` asserts that with real injection payloads. It also strips a leading open tag (the snippet is evaluated inside a closure) and
 re-enters PHP mode when a snippet ends in markup, or the wrapper's closing brace becomes literal text.
 
 **Aliasing has one source of truth.** `bindingNameFor` (exported from `codegen.ts`) decides the local binding
 for a PHP name; `codegen.ts`, `dts.ts` and the uniqueness guard in `parse.ts` all call it so they cannot drift.
 `parse.ts` also reserves the generated module's own identifiers (`__mod`, `createPhpModule`, `_default`,
 `default`), skipping any PHP name that would collide — `define()` accepts names a `const` declaration cannot.
+`RESERVED` in `codegen.ts` is *ECMAScript's* invalid-binding list (reserved words + strict-mode additions +
+`arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
+transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,
+so `Bun.Transpiler` alone is not proof a generated module loads — `test/e2e.test.ts` imports a `yield`
+constant through the real loader for exactly that reason.
 
 **Type-mapping changes** go in `php-types.ts` (`BUILTIN_TS` for declarations, `convertDocPart` for docblocks).
 The precedence rule lives in `chooseType` in `parse.ts`: a real type declaration wins, *except* that bare

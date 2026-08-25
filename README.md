@@ -88,22 +88,33 @@ For a snippet that does not warrant a file, tag a template with `BunPHP`:
 ```ts
 import { BunPHP } from "bun-php";
 
-await BunPHP`<?php echo "Hello world";`;   // "Hello world"
+await BunPHP`<?php echo "Hello world";`;   // prints "Hello world"
 await BunPHP`<?php return 40 + 2;`;        // 42
 ```
 
-It resolves to the value of a top-level `return`, or to whatever the snippet
-printed when it does not return one.
+PHP prints for itself: `echo` reaches the terminal, exactly as it does from an
+imported `.php` file and from the PHP CLI. The promise resolves to the value of
+a top-level `return`, or to `null` — PHP's own answer for a closure that returns
+nothing — when there is no `return`.
+
+To take that output as a value instead, use `BunPHP.capture`, which prints
+nothing:
+
+```ts
+await BunPHP.capture`<?php echo "Hello world";`;   // "Hello world"
+await BunPHP.capture`<?php return 40 + 2;`;        // 42, still — a return wins
+await BunPHP.capture`<?php $unused = 1;`;          // ""  — printed nothing
+```
 
 Tags behave as they do in a PHP file, where both are optional:
 
 ```ts
-await BunPHP`<?php echo "hi";`;              // "hi"  — no closing tag
-await BunPHP`<?php echo "hi"; ?>`;           // "hi"  — closing tag
-await BunPHP`return 1 + 1;`;                 // 2     — no tags at all
-await BunPHP`<?= 6 * 7 ?>`;                  // "42"  — short echo
-await BunPHP`<p>a</p><?php echo "b";`;       // "<p>a</p>b" — markup first
-await BunPHP`<?php echo "a"; ?><i>b</i>`;    // "a<i>b</i>" — switching modes
+await BunPHP.capture`<?php echo "hi";`;              // "hi"  — no closing tag
+await BunPHP.capture`<?php echo "hi"; ?>`;           // "hi"  — closing tag
+await BunPHP`return 1 + 1;`;                         // 2     — no tags at all
+await BunPHP.capture`<?= 6 * 7 ?>`;                  // "42"  — short echo
+await BunPHP.capture`<p>a</p><?php echo "b";`;       // "<p>a</p>b" — markup first
+await BunPHP.capture`<?php echo "a"; ?><i>b</i>`;    // "a<i>b</i>" — switching modes
 ```
 
 A snippet with no tags at all is taken as PHP code rather than markup, since
@@ -129,8 +140,9 @@ await BunPHP`<?php return "Hello " . ${name};`;   // correct
 await BunPHP`<?php return "Hello ${name}";`;      // literal text, not the value
 ```
 
-Snippets share one interpreter, and each runs as its own PHP request, so
-nothing leaks between them. `BunPHP.dispose()` shuts it down.
+Snippets share one interpreter — `BunPHP` and `BunPHP.capture` use the same one
+— and each runs as its own PHP request, so nothing leaks between them.
+`BunPHP.dispose()` shuts it down.
 
 ## Types
 
@@ -304,6 +316,10 @@ state on the JavaScript side.
   php-wasm build: `mbstring`, `openssl`, `hash`, `bcmath`, `dom`, `tokenizer`,
   `gd`, `zip`, `curl`, `sqlite3` and friends. Notably **`intl` is absent**, so
   packages requiring `ext-intl` will not load.
+- **`function readonly()` does not parse.** PHP 8.5 itself allows `readonly`
+  as a function name (an explicit exception in the keyword list), but
+  php-parser — which powers the import pipeline — rejects it, so a file
+  declaring one fails to import with a parse error.
 - **PHP 8.5 only.** The runtime import is isolated in `src/php-runtime.ts`, so
   supporting other versions is a one-line change plus the matching
   `@php-wasm/node-X-Y` dependency.
