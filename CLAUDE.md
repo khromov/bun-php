@@ -1,106 +1,93 @@
+# CLAUDE.md
 
-Default to using Bun instead of Node.js.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Bun automatically loads .env, so don't use dotenv.
+## What this is
 
-## APIs
+A Bun plugin that makes `.php` files importable: `import { greet } from "./hello.php"` returns an async JS
+function that calls into a PHP 8.5 interpreter running in WebAssembly (php-wasm). No PHP binary involved.
+Published as the `bun-php` package; `src/` ships as-is (no build step — `exports` points straight at `.ts`).
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+## Commands
 
-## Testing
-
-Use `bun test` to run tests.
-
-```ts#index.test.ts
-import { test, expect } from "bun:test";
-
-test("hello world", () => {
-  expect(1).toBe(1);
-});
+```bash
+bun install
+bun test                          # all tests
+bun test test/parse.test.ts       # one file
+bun test -t "variadic"            # one test by name
+bun run example                   # example/index.ts against example/hello.php
+bun run typecheck                 # bunx tsc -p tsconfig.json (noEmit)
 ```
 
-## Frontend
+There is no lint step and no build step.
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+## Architecture
 
-Server:
+The pipeline runs once per imported `.php` file, at load time:
 
-```ts#index.ts
-import index from "./index.html"
-
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
+```
+onLoad (plugin.ts)
+  → parsePhp (parse.ts)      PHP source  → PhpModuleMeta
+  → generateModule (codegen.ts)  meta    → JS module source, returned to Bun
+  → generateDts (dts.ts)         meta    → sidecar <file>.php.d.ts written next to the source
 ```
 
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
+The generated module imports `createPhpModule` from `runtime.ts` and exports one async wrapper per PHP
+function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, decode the result) →
+`php-runtime.ts` (the interpreter).
 
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
+| File | Responsibility |
+| --- | --- |
+| `src/plugin.ts` | `onLoad` hook, option defaults, sidecar writing |
+| `src/register.ts` | Side-effecting `plugin(phpPlugin())` for `preload` |
+| `src/parse.ts` | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes) |
+| `src/php-types.ts` | PHP type hints and docblock types → TypeScript type expressions |
+| `src/codegen.ts` | Emits the JS module |
+| `src/dts.ts` | Emits the `.d.ts` sidecar |
+| `src/runtime.ts` | Interpreter cache, lifecycle (`$ready`/`$reset`/`$dispose`), stdout modes |
+| `src/marshal.ts` | The JS ⇄ PHP call protocol |
+| `src/php-runtime.ts` | The only module importing `@php-wasm/*` |
+| `types/php.d.ts` | Fallback `*.php` module declaration for users not generating sidecars |
 
-With the following `frontend.tsx`:
+## Things that will bite you
 
-```tsx#frontend.tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
+**Registration must happen via `preload`.** ES module resolution beats `Bun.plugin()` called from the
+importing file. `bunfig.toml` preloads `./src/register.ts` twice — once at top level, once under `[test]`,
+because the top-level `preload` does not apply to `bun test`. The e2e tests depend on that second entry.
 
-// import .css files directly and it works
-import './index.css';
+**Generated code imports the runtime by absolute path** (`RUNTIME_PATH` in `plugin.ts`), not by the
+`bun-php/runtime` specifier, so it resolves the same whether bun-php is a dependency, a link, or this repo.
 
-const root = createRoot(document.body);
+**Interpreters are cached on `globalThis`** (`__bunPhpInstances` in `runtime.ts`), not in a module variable —
+`bun --hot` resets the module registry on every save and would otherwise leak an interpreter per edit. The
+same reason drives the "skip the write if the content is unchanged" guard in `writeSidecar`: rewriting churns
+mtime and retriggers the watcher in a loop.
 
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
+**The call protocol is a sentinel-delimited JSON envelope**, not plain stdout parsing. PHP flushes open output
+buffers to stdout on a fatal error, so the script's own `echo` output can land ahead of the result;
+`decodeOutput` splits on the *last* sentinel. Any change to `buildCallScript` needs the matching change in
+`decodeOutput`/`unwrapEnvelope`.
 
-root.render(<Frontend />);
-```
+**Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module each time because
+php-wasm resets request-scoped state (declared functions included) between runs. That is also why `static`
+variables and globals do not persist across calls — a documented limitation, and `test/e2e.test.ts` asserts it.
 
-Then, run index.ts
+**Reserved-word handling is duplicated** between `codegen.ts` and `dts.ts`; both call `isBindableIdentifier`
+(exported from `codegen.ts`) and must stay in agreement about aliasing.
 
-```sh
-bun --hot ./index.ts
-```
+**Type-mapping changes** go in `php-types.ts` (`BUILTIN_TS` for declarations, `convertDocPart` for docblocks).
+The precedence rule lives in `chooseType` in `parse.ts`: a real type declaration wins, *except* that bare
+`array` and `mixed` defer to a `@param`/`@return` docblock tag.
 
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+**PHP version is a one-line change**: the `@php-wasm/node-8-5` import in `php-runtime.ts` plus the matching
+dependency. `@php-wasm/node` is deliberately avoided — it statically imports a NAN native addon that throws at
+module-evaluation time when its binding fails to load.
+
+**Sidecar `.d.ts` files:** `test/fixtures/*.php.d.ts` are gitignored (regenerated by the test run);
+`example/hello.php.d.ts` is committed on purpose as a worked example.
+
+## Bun conventions
+
+Default to Bun over Node.js: `bun <file>`, `bun test`, `bun install`, `bun run <script>`, `bunx <pkg>`.
+Prefer `Bun.file`/`Bun.write` over `node:fs` (test helpers use `node:fs/promises` for tmpdir work, which is
+fine). Bun loads `.env` automatically — no dotenv. Bun API docs are in `node_modules/bun-types/docs/**.mdx`.
