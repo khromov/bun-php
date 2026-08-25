@@ -13,6 +13,7 @@ resolves exactly as it would under `php-fpm` or the CLI.
 ```bash
 composer install --working-dir=demos   # from the repository root
 bun run demos                          # run every demo
+bun run inline                         # PHP with no .php file, via BunPHP`...`
 bun run phpinfo                        # serve phpinfo() on http://localhost:8080
 bun test demos/demos.test.ts           # assert they all still work
 ```
@@ -60,6 +61,16 @@ GD here is 2.3.3 with JPEG, PNG, WebP, AVIF and GIF support. One quirk worth
 knowing: `imagescale()` rejects `IMG_BICUBIC_FIXED` in this build, so the demo
 uses the default interpolation. `imagedestroy()` is also deprecated as of PHP
 8.5 and has had no effect since 8.0.
+
+**No `.php` file is required.** `demos/inline.ts` evaluates a snippet through
+the `` BunPHP`...` `` tagged template, which is a plain runtime API — it needs
+neither the plugin nor the `preload` entry, and a snippet that prints resolves
+to what it printed:
+
+```ts
+import { BunPHP } from "bun-php";
+console.log(await BunPHP`<?php echo "Hello from PHP!"; ?>`);   // Hello from PHP!
+```
 
 **`bun run phpinfo` serves the real page.** `Bun.serve()` on port 8080 hands
 back the output of PHP's own `phpinfo()`, with a header noting what produced
