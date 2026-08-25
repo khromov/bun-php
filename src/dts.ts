@@ -1,4 +1,4 @@
-import { isBindableIdentifier } from "./codegen";
+import { bindingNameFor, isBindableIdentifier } from "./codegen";
 import type { PhpFunctionMeta, PhpModuleMeta, PhpValue } from "./types";
 
 /**
@@ -36,7 +36,7 @@ export function generateDts(meta: PhpModuleMeta, sourceName: string): string {
       lines.push(`export declare function ${fn.exportName}${signature};`);
       exposed.push(`  ${fn.exportName}: typeof ${fn.exportName};`);
     } else {
-      const alias = `__phpFn_${fn.exportName.replace(/[^A-Za-z0-9_$]/g, "_")}`;
+      const alias = bindingNameFor(fn.exportName, "function");
       lines.push(`declare function ${alias}${signature};`);
       lines.push(`export { ${alias} as ${JSON.stringify(fn.exportName)} };`);
       exposed.push(`  ${JSON.stringify(fn.exportName)}: typeof ${alias};`);
@@ -49,7 +49,7 @@ export function generateDts(meta: PhpModuleMeta, sourceName: string): string {
     if (isBindableIdentifier(constant.name)) {
       lines.push(`export declare const ${constant.name}: ${type};`);
     } else {
-      const alias = `__phpConst_${constant.name.replace(/[^A-Za-z0-9_$]/g, "_")}`;
+      const alias = bindingNameFor(constant.name, "constant");
       lines.push(`declare const ${alias}: ${type};`);
       lines.push(`export { ${alias} as ${JSON.stringify(constant.name)} };`);
     }

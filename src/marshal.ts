@@ -33,9 +33,53 @@ interface FatalEnvelope {
 
 export type Envelope = SuccessEnvelope | ThrowableEnvelope | FatalEnvelope;
 
-/** Encode JS arguments as a PHP argument list. */
-export function encodeArgs(args: readonly unknown[]): string {
-  return args.map((arg) => phpVar(arg as never)).join(", ");
+const MAX_INT64 = 2n ** 63n - 1n;
+const MIN_INT64 = -(2n ** 63n);
+
+/**
+ * Encode JS arguments as a PHP argument list.
+ *
+ * Trailing `undefined` arguments are dropped so PHP parameter defaults apply —
+ * the natural meaning of forwarding an optional value that was never set. An
+ * `undefined` hole before a defined argument has no PHP spelling, so it is
+ * rejected rather than silently sent as `null`.
+ */
+export function encodeArgs(args: readonly unknown[], label = "call"): string {
+  let length = args.length;
+  while (length > 0 && args[length - 1] === undefined) length--;
+
+  const parts: string[] = [];
+  for (let i = 0; i < length; i++) {
+    parts.push(encodeValue(args[i], `${label}: argument #${i + 1}`));
+  }
+  return parts.join(", ");
+}
+
+/**
+ * Encode one JS value as a PHP expression. `context` names the value in error
+ * messages, e.g. `greet: argument #1` or `BunPHP: interpolation #2`.
+ */
+export function encodeValue(value: unknown, context: string): string {
+  if (value === undefined) {
+    throw new TypeError(`${context} is undefined; pass null instead`);
+  }
+  if (typeof value === "bigint") {
+    if (value < MIN_INT64 || value > MAX_INT64) {
+      throw new TypeError(`${context} (${value}n) overflows PHP's 64-bit int`);
+    }
+    // PHP parses `-9223372036854775808` as unary minus on an overflowing
+    // int literal (yielding a float), so PHP_INT_MIN needs the classic spelling.
+    return value === MIN_INT64 ? "(-9223372036854775807 - 1)" : value.toString();
+  }
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    return Number.isNaN(value) ? "NAN" : value > 0 ? "INF" : "-INF";
+  }
+  try {
+    return phpVar(value as never);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new TypeError(`${context} could not be encoded: ${reason}`);
+  }
 }
 
 /**
@@ -79,19 +123,25 @@ $__bunphp_emit = function (array $r) use (&$__bunphp_sent) {
                 'line' => 0,
                 'trace' => '',
             ],
-        ]);
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            $json = '{"ok":false,"out":"","e":{"class":"JsonException","msg":"Return value could not be encoded","file":"","line":0,"trace":""}}';
+        }
     }
-    echo ${PHP_SENTINEL} . $json;
+    echo ${PHP_SENTINEL} . $json . ${PHP_SENTINEL};
 };
 register_shutdown_function(function () use ($__bunphp_emit, &$__bunphp_sent) {
     if ($__bunphp_sent) { return; }
     $err = error_get_last();
+    // Only a fatal error explains reaching shutdown without a result; a stale
+    // warning or notice from earlier in the request must not be blamed.
+    $fatal = $err !== null && ($err['type'] & (E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR)) !== 0;
     $__bunphp_emit([
         'ok' => false,
         'fatal' => [
-            'msg' => $err['message'] ?? 'PHP exited before returning a value',
-            'file' => $err['file'] ?? '',
-            'line' => $err['line'] ?? 0,
+            'msg' => $fatal ? $err['message'] : 'PHP exited before returning a value',
+            'file' => $fatal ? $err['file'] : '',
+            'line' => $fatal ? $err['line'] : 0,
         ],
     ]);
 });
@@ -115,20 +165,50 @@ ${prelude}    require_once ${phpVar(modulePath as never)};
 `;
 }
 
-/** Split raw stdout into the script's own output and the result envelope. */
+/**
+ * Split raw stdout into the script's own output and the result envelope.
+ *
+ * The envelope sits between a sentinel pair, because output can surround it on
+ * both sides: PHP flushes open buffers to stdout ahead of the envelope on a
+ * fatal error, and user shutdown functions or destructors can still print
+ * after the envelope has been emitted.
+ */
 export function decodeOutput(stdout: string): {
   out: string;
   envelope: Envelope | null;
 } {
-  const index = stdout.lastIndexOf(SENTINEL);
-  if (index === -1) return { out: stdout, envelope: null };
+  const close = stdout.lastIndexOf(SENTINEL);
+  if (close === -1) return { out: stdout, envelope: null };
 
-  const before = stdout.slice(0, index);
-  const json = stdout.slice(index + SENTINEL.length);
+  const open = close === 0 ? -1 : stdout.lastIndexOf(SENTINEL, close - 1);
+  if (open === -1) {
+    // A lone sentinel: the process died before the closing one was written.
+    return parseEnvelope(
+      stdout.slice(0, close),
+      stdout.slice(close + SENTINEL.length),
+      "",
+      stdout,
+    );
+  }
+
+  return parseEnvelope(
+    stdout.slice(0, open),
+    stdout.slice(open + SENTINEL.length, close),
+    stdout.slice(close + SENTINEL.length),
+    stdout,
+  );
+}
+
+function parseEnvelope(
+  before: string,
+  json: string,
+  after: string,
+  raw: string,
+): { out: string; envelope: Envelope | null } {
   try {
-    return { out: before, envelope: JSON.parse(json) as Envelope };
+    return { out: before + after, envelope: JSON.parse(json) as Envelope };
   } catch {
-    return { out: stdout, envelope: null };
+    return { out: raw, envelope: null };
   }
 }
 

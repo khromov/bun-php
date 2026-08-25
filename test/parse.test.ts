@@ -187,6 +187,18 @@ describe("docblocks", () => {
     expect(fn(`/** @param int[] $a */ function f(?array $a) {}`).params[0]!.tsType)
       .toBe("number[] | null");
   });
+
+  test("unions inside generics are not shredded", () => {
+    expect(fn(`/** @return array<int|string> */ function f() {}`).returnTsType)
+      .toBe("(number | string)[]");
+    expect(fn(`/** @return array<string, int|null> */ function f() {}`).returnTsType)
+      .toBe("Record<string, number | null>");
+  });
+
+  test("a parenthesised union with an array suffix survives", () => {
+    expect(fn(`/** @param (int|string)[] $x */ function f(array $x) {}`).params[0]!.tsType)
+      .toBe("(number | string)[]");
+  });
 });
 
 describe("constants", () => {
@@ -240,9 +252,93 @@ describe("constants", () => {
     expect(meta.skipped.join(" ")).toContain("C");
   });
 
+  test("skips a name that collides with the default export", () => {
+    // define() accepts names a `const` declaration could not.
+    const meta = parse(`define('default', 1); const OK = 2;`);
+    expect(meta.constants).toEqual([{ name: "OK", value: 2 }]);
+    expect(meta.skipped.join(" ")).toContain("default");
+  });
+
+  test("skips names that would sanitise to the same binding", () => {
+    const meta = parse(`define('A-B', 1); define('A.B', 2);`);
+    expect(meta.constants).toEqual([{ name: "A-B", value: 1 }]);
+    expect(meta.skipped.join(" ")).toContain("A.B");
+  });
+
+  test("skips a constant colliding with a function name", () => {
+    const meta = parse(`function dup() {} define('dup', 1);`);
+    expect(meta.functions.map((f) => f.exportName)).toEqual(["dup"]);
+    expect(meta.constants).toEqual([]);
+    expect(meta.skipped.join(" ")).toContain("dup");
+  });
+
+  test("skips a name that collides with a generated binding", () => {
+    const meta = parse(`define('__mod', 1); const OK = 2;`);
+    expect(meta.constants).toEqual([{ name: "OK", value: 2 }]);
+  });
+
+  test("skips functions named after generated bindings", () => {
+    const meta = parse(
+      `function __mod() {} function createPhpModule() {} function _default() {}`,
+    );
+    expect(meta.functions).toEqual([]);
+    expect(meta.skipped).toHaveLength(3);
+  });
+
+  test("skips a function colliding with a constant name", () => {
+    const meta = parse(`const dup = 1; function dup() {}`);
+    expect(meta.constants).toEqual([{ name: "dup", value: 1 }]);
+    expect(meta.functions).toEqual([]);
+    expect(meta.skipped.join(" ")).toContain("dup");
+  });
+
+  test("equal-named constants in different namespaces collide", () => {
+    // The namespace prefix is not part of a constant's export name.
+    const meta = parsePhp(
+      `<?php namespace A { const X = 1; } namespace B { const X = 2; }`,
+      "/virtual/t.php",
+    );
+    expect(meta.constants).toEqual([{ name: "X", value: 1 }]);
+    expect(meta.skipped.join(" ")).toContain("X");
+  });
+
   test("ignores class constants", () => {
     const meta = parse(`class C { const INNER = 1; } const OUTER = 2;`);
     expect(meta.constants).toEqual([{ name: "OUTER", value: 2 }]);
+  });
+});
+
+describe("constant evaluation follows PHP semantics", () => {
+  test("implicit keys continue from the highest integer key", () => {
+    const meta = parse(`const F = [5 => 'x', 'y'];`);
+    expect(meta.constants[0]!.value).toEqual({ "5": "x", "6": "y" });
+  });
+
+  test("float, bool and numeric-string keys collapse to the same int key", () => {
+    const meta = parse(`const K = [1.5 => 'f', true => 't', '1' => 's'];`);
+    expect(meta.constants[0]!.value).toEqual({ "1": "s" });
+  });
+
+  test("explicit sequential integer keys still make a list", () => {
+    const meta = parse(`const L = [0 => 'a', 1 => 'b'];`);
+    expect(meta.constants[0]!.value).toEqual(["a", "b"]);
+  });
+
+  test("non-canonical numeric strings stay string keys", () => {
+    const meta = parse(`const N = ['01' => 'a', '-0' => 'b'];`);
+    expect(meta.constants[0]!.value).toEqual({ "01": "a", "-0": "b" });
+  });
+
+  test("negation uses PHP truthiness, not JavaScript's", () => {
+    const meta = parse(`const A = !'0'; const B = !''; const C = ![]; const D = !'x';`);
+    expect(meta.constants.map((c) => c.value)).toEqual([true, true, true, false]);
+  });
+
+  test("an overflowing literal is skipped rather than exported as null", () => {
+    // 1e999 is INF in PHP; JSON.stringify would silently turn it into null.
+    const meta = parse(`const H = 1e999;`);
+    expect(meta.constants).toEqual([]);
+    expect(meta.skipped.join(" ")).toContain("H");
   });
 });
 

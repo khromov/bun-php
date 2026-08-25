@@ -17,7 +17,9 @@ import php, {
   quits,
   roundTrip,
   tick,
+  warnsThenExits,
   withDefault,
+  withShutdown,
 } from "./fixtures/e2e.php";
 import reserved from "./fixtures/reserved.php";
 
@@ -67,6 +69,35 @@ describe("calling PHP functions", () => {
     const nasty = `quote' double" back\\slash $var {curly} \n newline ünïcödé 🎉`;
     expect(await greet(nasty)).toBe(`Hello, ${nasty}!`);
   });
+
+  test("output printed after the result does not corrupt it", async () => {
+    // A user-registered shutdown function runs after the envelope is emitted.
+    expect(await withShutdown()).toBe(41);
+  });
+
+  test("a PHP function shadowing Object.prototype is reachable", async () => {
+    expect(await (php as any).toString()).toBe("shadowed the prototype");
+  });
+});
+
+describe("argument marshalling", () => {
+  test("a trailing undefined argument falls back to the PHP default", async () => {
+    expect(await withDefault("a", undefined as any)).toBe("a/default");
+  });
+
+  test("an undefined hole before a defined argument is rejected", async () => {
+    await expect(withDefault(undefined as any, "b")).rejects.toThrow(
+      /withDefault: argument #1 is undefined/,
+    );
+  });
+
+  test("BigInt arguments become PHP ints", async () => {
+    expect(await addAll(2n as any, 3n as any)).toBe(5);
+  });
+
+  test("a BigInt beyond 64 bits is rejected with context", async () => {
+    await expect(addAll((2n ** 64n) as any)).rejects.toThrow(/overflows/);
+  });
 });
 
 describe("constants", () => {
@@ -114,6 +145,17 @@ describe("errors", () => {
     }
   });
 
+  test("a stale warning is not blamed for an envelope-less exit", async () => {
+    try {
+      await warnsThenExits();
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PhpFatalError);
+      expect((error as Error).message).toContain("PHP exited before returning a value");
+      expect((error as Error).message).not.toContain("just a warning");
+    }
+  });
+
   test("the interpreter still works after an error", async () => {
     expect(await greet("after")).toBe("Hello, after!");
   });
@@ -139,10 +181,42 @@ describe("interpreter lifecycle", () => {
     expect(await php.$eval("return PHP_VERSION;")).toStartWith("8.5");
   });
 
+  test("$eval tolerates a trailing line comment", async () => {
+    expect(await php.$eval("return 7; // done")).toBe(7);
+    expect(await php.$eval("return 8; # also done")).toBe(8);
+  });
+
   test("$reset swaps in a fresh runtime and keeps working", async () => {
     await php.$reset();
     expect(await greet("reset")).toBe("Hello, reset!");
     expect(await php.$eval("return 1 + 1;")).toBe(2);
+  });
+
+  test("$reset discards files written into the virtual filesystem", async () => {
+    await php.$eval("file_put_contents('/tmp/reset-probe', 'x'); return true;");
+    expect(await php.$eval("return file_exists('/tmp/reset-probe');")).toBe(true);
+    await php.$reset();
+    expect(await php.$eval("return file_exists('/tmp/reset-probe');")).toBe(false);
+  });
+
+  test("$reset lets an in-flight call finish instead of killing it", async () => {
+    const [greeting] = await Promise.all([greet("concurrent"), php.$reset()]);
+    expect(greeting).toBe("Hello, concurrent!");
+  });
+
+  test("$dispose during boot still tears the instance down", async () => {
+    const cache = (globalThis as any).__bunPhpInstances as Map<string, unknown>;
+    const id = `${import.meta.dir}/fixtures/e2e.php`;
+
+    await php.$dispose(); // Go cold so $ready() below starts a real boot.
+    const ready = php.$ready();
+    await php.$dispose();
+    await ready; // The pending boot resolves, but must not resurrect anything.
+    expect(cache.has(id)).toBe(false);
+
+    // The next call boots a fresh interpreter and re-registers it.
+    expect(await greet("revived")).toBe("Hello, revived!");
+    expect(cache.has(id)).toBe(true);
   });
 
   test("$meta reports what the parser found", () => {

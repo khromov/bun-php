@@ -5,24 +5,10 @@
  *
  *     /// <reference types="bun-php/types" />
  *
+ * The shorthand form is deliberate: it types *every* import from a `.php`
+ * file — named and default alike — as `any`. A declaration body could give the
+ * default export a precise shape, but would reject named imports entirely.
  * A generated sidecar always wins over this declaration, and gives real
  * parameter and return types instead of `any`.
  */
-declare module "*.php" {
-  const phpModule: {
-    call(name: string, args: readonly unknown[]): Promise<any>;
-    $ready(): Promise<void>;
-    $reset(): Promise<void>;
-    $dispose(): Promise<void>;
-    $eval(code: string): Promise<any>;
-    $php(): Promise<any>;
-    $output(): string;
-    $meta: {
-      functions: readonly unknown[];
-      constants: readonly unknown[];
-      skipped: readonly string[];
-    };
-    [name: string]: any;
-  };
-  export default phpModule;
-}
+declare module "*.php";

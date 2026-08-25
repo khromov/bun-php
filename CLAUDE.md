@@ -49,6 +49,7 @@ function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, dec
 | `src/codegen.ts` | Emits the JS module |
 | `src/dts.ts` | Emits the `.d.ts` sidecar |
 | `src/runtime.ts` | Interpreter cache, lifecycle (`$ready`/`$reset`/`$dispose`), stdout modes |
+| `src/inline.ts` | The `` BunPHP`...` `` tagged template for file-less snippets |
 | `src/marshal.ts` | The JS ⇄ PHP call protocol |
 | `src/project.ts` | Walks up from a `.php` file to find its Composer root and autoloader |
 | `src/php-runtime.ts` | The only module importing `@php-wasm/*`, plus the NODEFS mount handler |
@@ -68,10 +69,11 @@ because the top-level `preload` does not apply to `bun test`. The e2e tests depe
 same reason drives the "skip the write if the content is unchanged" guard in `writeSidecar`: rewriting churns
 mtime and retriggers the watcher in a loop.
 
-**The call protocol is a sentinel-delimited JSON envelope**, not plain stdout parsing. PHP flushes open output
-buffers to stdout on a fatal error, so the script's own `echo` output can land ahead of the result;
-`decodeOutput` splits on the *last* sentinel. Any change to `buildCallScript` needs the matching change in
-`decodeOutput`/`unwrapEnvelope`.
+**The call protocol is a JSON envelope between a sentinel pair**, not plain stdout parsing. PHP flushes open
+output buffers to stdout on a fatal error, so the script's own `echo` output can land ahead of the envelope,
+and user shutdown functions or destructors can print after it; `decodeOutput` parses the JSON between the
+*last* sentinel pair and treats everything around it as script output. Any change to `buildCallScript` needs
+the matching change in `decodeOutput`/`unwrapEnvelope`.
 
 **Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module each time because
 php-wasm resets request-scoped state (declared functions included) between runs. That is also why `static`
@@ -85,8 +87,15 @@ elsewhere). Mounts survive `hotSwapPHPRuntime`, so `$reset()` must *not* re-moun
 **Composer's autoloader is re-required on every call** (`buildCallScript`), because request state resets. This
 is why `demos/` works at all, and why warm-call cost tracks how much the library does per call.
 
-**Reserved-word handling is duplicated** between `codegen.ts` and `dts.ts`; both call `isBindableIdentifier`
-(exported from `codegen.ts`) and must stay in agreement about aliasing.
+**Inline snippets interpolate as expressions, not text.** `src/inline.ts` runs every interpolated value
+through `phpVar()`, so a value can never be executed as code; `test/inline.test.ts` asserts that with real
+injection payloads. It also strips a leading open tag (the snippet is evaluated inside a closure) and
+re-enters PHP mode when a snippet ends in markup, or the wrapper's closing brace becomes literal text.
+
+**Aliasing has one source of truth.** `bindingNameFor` (exported from `codegen.ts`) decides the local binding
+for a PHP name; `codegen.ts`, `dts.ts` and the uniqueness guard in `parse.ts` all call it so they cannot drift.
+`parse.ts` also reserves the generated module's own identifiers (`__mod`, `createPhpModule`, `_default`,
+`default`), skipping any PHP name that would collide — `define()` accepts names a `const` declaration cannot.
 
 **Type-mapping changes** go in `php-types.ts` (`BUILTIN_TS` for declarations, `convertDocPart` for docblocks).
 The precedence rule lives in `chooseType` in `parse.ts`: a real type declaration wins, *except* that bare

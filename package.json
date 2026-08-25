@@ -39,6 +39,11 @@
     "@types/bun": "latest"
   },
   "peerDependencies": {
-    "typescript": "^7.0.2"
+    "typescript": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   }
 }

@@ -1,6 +1,7 @@
 import { phpPlugin } from "./plugin";
 
 export { phpPlugin } from "./plugin";
+export { BunPHP, type BunPHPTag } from "./inline";
 export { parsePhp } from "./parse";
 export { resolveProject, type PhpProject } from "./project";
 export { generateModule } from "./codegen";

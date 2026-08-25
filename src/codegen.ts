@@ -3,15 +3,16 @@ import type { PhpModuleMeta, StdoutMode } from "./types";
 /**
  * Words that cannot be used as a `const` binding name. They are still valid as
  * *export* names, so a PHP `function delete()` is bound to a safe local and
- * re-exported under its original name.
+ * re-exported under its original name. `arguments` and `eval` are not reserved
+ * words, but strict mode (which every ES module is in) forbids binding them.
  */
 const RESERVED = new Set([
-  "await", "break", "case", "catch", "class", "const", "continue", "debugger",
-  "default", "delete", "do", "else", "enum", "export", "extends", "false",
-  "finally", "for", "function", "if", "implements", "import", "in", "instanceof",
-  "interface", "let", "new", "null", "package", "private", "protected", "public",
-  "return", "static", "super", "switch", "this", "throw", "true", "try",
-  "typeof", "var", "void", "while", "with", "yield",
+  "arguments", "await", "break", "case", "catch", "class", "const", "continue",
+  "debugger", "default", "delete", "do", "else", "enum", "eval", "export",
+  "extends", "false", "finally", "for", "function", "if", "implements", "import",
+  "in", "instanceof", "interface", "let", "new", "null", "package", "private",
+  "protected", "public", "return", "static", "super", "switch", "this", "throw",
+  "true", "try", "typeof", "var", "void", "while", "with", "yield",
 ]);
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -19,6 +20,18 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 /** Whether a PHP function name can be used directly as a JS binding. */
 export function isBindableIdentifier(name: string): boolean {
   return IDENTIFIER.test(name) && !RESERVED.has(name);
+}
+
+/**
+ * The local binding a name is declared under: the name itself when it is a
+ * legal identifier, otherwise a sanitised alias that gets re-exported under
+ * the original name. `codegen.ts`, `dts.ts` and the uniqueness guard in
+ * `parse.ts` all rely on this one function to agree about aliasing.
+ */
+export function bindingNameFor(name: string, kind: "function" | "constant"): string {
+  if (isBindableIdentifier(name)) return name;
+  const prefix = kind === "function" ? "__phpFn" : "__phpConst";
+  return `${prefix}_${name.replace(/[^A-Za-z0-9_$]/g, "_")}`;
 }
 
 export interface CodegenOptions {
@@ -68,7 +81,7 @@ export function generateModule(options: CodegenOptions): string {
       lines.push(`export const ${name} = ${call}`);
     } else {
       // Reserved words are legal export names, just not local binding names.
-      const alias = `__phpFn${sanitize(name)}`;
+      const alias = bindingNameFor(name, "function");
       lines.push(`const ${alias} = ${call}`);
       lines.push(`export { ${alias} as ${JSON.stringify(name)} };`);
     }
@@ -80,7 +93,7 @@ export function generateModule(options: CodegenOptions): string {
     if (isBindableIdentifier(constant.name)) {
       lines.push(`export const ${constant.name} = ${value};`);
     } else {
-      const alias = `__phpConst${sanitize(constant.name)}`;
+      const alias = bindingNameFor(constant.name, "constant");
       lines.push(`const ${alias} = ${value};`);
       lines.push(`export { ${alias} as ${JSON.stringify(constant.name)} };`);
     }
@@ -93,9 +106,4 @@ export function generateModule(options: CodegenOptions): string {
   }
 
   return lines.join("\n") + "\n";
-}
-
-/** Turn an arbitrary PHP name into something usable inside a JS identifier. */
-function sanitize(name: string): string {
-  return `_${name.replace(/[^A-Za-z0-9_$]/g, "_")}`;
 }

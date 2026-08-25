@@ -6,7 +6,7 @@ import {
   encodeArgs,
   unwrapEnvelope,
 } from "./marshal";
-import { bootPhp, createRuntimeId, nodeFsMountHandler } from "./php-runtime";
+import { bootPhp, nodeFsMountHandler } from "./php-runtime";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PhpModuleApi, PhpModuleMeta, StdoutMode } from "./types";
@@ -47,6 +47,10 @@ class PhpInstance {
   #booting: Promise<PHP> | null = null;
   #captured = "";
   #mounted = false;
+  /** Calls currently executing, so lifecycle methods can wait them out. */
+  readonly #inflight = new Set<Promise<unknown>>();
+  /** Serialises reset/dispose so they cannot interleave with each other. */
+  #lifecycle: Promise<unknown> = Promise.resolve();
 
   constructor(
     readonly id: string,
@@ -59,8 +63,21 @@ class PhpInstance {
   /** Boot lazily, and only once even under concurrent first calls. */
   async php(): Promise<PHP> {
     if (this.#php) return this.#php;
+    // A disposed instance re-boots on first use; put it back in the cache so
+    // --hot teardown can find it again (unless a newer instance owns the id).
+    const cache = instanceCache();
+    if (!cache.has(this.id)) cache.set(this.id, this);
     this.#booting ??= this.#boot();
     return this.#booting;
+  }
+
+  #serialize<T>(op: () => Promise<T>): Promise<T> {
+    const task = this.#lifecycle.then(op, op);
+    this.#lifecycle = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
   }
 
   async #boot(): Promise<PHP> {
@@ -91,6 +108,14 @@ class PhpInstance {
   }
 
   async run(expression: string, label: string): Promise<unknown> {
+    const task = this.#run(expression, label);
+    this.#inflight.add(task);
+    const settle = () => this.#inflight.delete(task);
+    task.then(settle, settle);
+    return task;
+  }
+
+  async #run(expression: string, label: string): Promise<unknown> {
     const php = await this.php();
     const script = buildCallScript(this.id, expression, this.autoload);
 
@@ -133,25 +158,56 @@ class PhpInstance {
     return value;
   }
 
-  /** Swap in a fresh runtime, discarding every trace of PHP state. */
-  async reset(): Promise<void> {
-    const php = await this.php();
-    await php.hotSwapPHPRuntime(await createRuntimeId());
-    // php-wasm re-applies mounts across a runtime swap, so only the
-    // written-source fallback needs restoring.
-    if (!this.#mounted) {
-      php.mkdir(dirname(this.id));
-      php.writeFile(this.id, this.source);
-    }
-    this.#captured = "";
+  /**
+   * Tear down the interpreter and boot a fresh one, discarding every trace of
+   * PHP state — the virtual filesystem included, which is why this boots a new
+   * runtime instead of using php-wasm's `hotSwapPHPRuntime` (a hot swap copies
+   * the old MEMFS into the replacement).
+   */
+  reset(): Promise<void> {
+    return this.#serialize(() => this.#reset());
   }
 
-  async dispose(): Promise<void> {
-    const php = this.#php;
-    this.#php = null;
+  async #reset(): Promise<void> {
+    this.#captured = "";
+    if (!this.#php && !this.#booting) return; // Never booted: nothing to discard.
+    const php = this.#php ?? (await this.#booting!.catch(() => null));
+    // Let in-flight calls finish before the runtime under them is torn down.
+    while (this.#inflight.size > 0) {
+      await Promise.allSettled([...this.#inflight]);
+    }
+    if (php && this.#php === php) {
+      this.#php = null;
+      this.#booting = null;
+      this.#mounted = false;
+      php.exit();
+    }
+    await this.php();
+  }
+
+  /**
+   * Shut the interpreter down and drop this instance from the cache.
+   *
+   * A boot still in flight is awaited so its runtime cannot leak (or re-arm
+   * `#php` after the fact), and the cache entry is only removed while it still
+   * points at this instance, so disposing a stale `--hot` handle does not
+   * evict its replacement.
+   */
+  dispose(): Promise<void> {
+    return this.#serialize(() => this.#dispose());
+  }
+
+  async #dispose(): Promise<void> {
+    const cache = instanceCache();
+    if (cache.get(this.id) === this) cache.delete(this.id);
+    const booting = this.#booting;
     this.#booting = null;
+    const php = this.#php ?? (booting ? await booting.catch(() => null) : null);
+    while (this.#inflight.size > 0) {
+      await Promise.allSettled([...this.#inflight]);
+    }
+    this.#php = null;
     this.#mounted = false;
-    instanceCache().delete(this.id);
     php?.exit();
   }
 }
@@ -170,8 +226,15 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
 
   const cache = instanceCache();
   let instance = cache.get(id);
-  // A changed source means the file was edited under --hot; rebuild from scratch.
-  if (instance && instance.source !== source) {
+  // A changed source (the file was edited under --hot) or changed plugin
+  // options mean the cached interpreter no longer matches; rebuild it.
+  if (
+    instance &&
+    (instance.source !== source ||
+      instance.stdout !== stdout ||
+      instance.root !== root ||
+      instance.autoload !== autoload)
+  ) {
     void instance.dispose();
     instance = undefined;
   }
@@ -184,7 +247,7 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
   const api: PhpModuleApi = {
     async call(name: string, args: readonly unknown[]): Promise<any> {
       const phpName = functions[name] ?? name;
-      const expression = `\\${phpName}(${encodeArgs(args)})`;
+      const expression = `\\${phpName}(${encodeArgs(args, phpName)})`;
       return live.run(expression, phpName);
     },
     async $ready(): Promise<void> {
@@ -197,7 +260,9 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
       await live.dispose();
     },
     async $eval(code: string): Promise<any> {
-      return live.run(`(static function () { ${code} })()`, "$eval");
+      // The newline keeps a trailing `//` or `#` comment in `code` from
+      // swallowing the closing brace.
+      return live.run(`(static function () { ${code}\n})()`, "$eval");
     },
     async $php(): Promise<PHP> {
       return live.php();
@@ -208,9 +273,11 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
     $meta: meta,
   };
 
-  // Expose every PHP function on the default export too.
+  // Expose every PHP function on the default export too. `Object.hasOwn`
+  // rather than `in`: a PHP function named `toString` or `constructor` must
+  // shadow `Object.prototype`, not be skipped because of it.
   for (const exportName of Object.keys(functions)) {
-    if (exportName in api) continue;
+    if (Object.hasOwn(api, exportName)) continue;
     Object.defineProperty(api, exportName, {
       value: (...args: unknown[]) => api.call(exportName, args),
       enumerable: true,

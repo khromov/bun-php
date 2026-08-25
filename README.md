@@ -81,6 +81,57 @@ exported under their original name and can be imported with an alias:
 import { delete as deleteFile } from "./files.php";
 ```
 
+## Inline PHP
+
+For a snippet that does not warrant a file, tag a template with `BunPHP`:
+
+```ts
+import { BunPHP } from "bun-php";
+
+await BunPHP`<?php echo "Hello world";`;   // "Hello world"
+await BunPHP`<?php return 40 + 2;`;        // 42
+```
+
+It resolves to the value of a top-level `return`, or to whatever the snippet
+printed when it does not return one.
+
+Tags behave as they do in a PHP file, where both are optional:
+
+```ts
+await BunPHP`<?php echo "hi";`;              // "hi"  — no closing tag
+await BunPHP`<?php echo "hi"; ?>`;           // "hi"  — closing tag
+await BunPHP`return 1 + 1;`;                 // 2     — no tags at all
+await BunPHP`<?= 6 * 7 ?>`;                  // "42"  — short echo
+await BunPHP`<p>a</p><?php echo "b";`;       // "<p>a</p>b" — markup first
+await BunPHP`<?php echo "a"; ?><i>b</i>`;    // "a<i>b</i>" — switching modes
+```
+
+A snippet with no tags at all is taken as PHP code rather than markup, since
+that is what an inline snippet is for.
+
+This is a plain runtime API, so unlike importing a `.php` file it needs no
+plugin registration and no `preload` entry.
+
+Interpolated values are converted to PHP **expressions**, never pasted in as
+source, so a value can never be executed as code:
+
+```ts
+const name = "Bun";
+await BunPHP`<?php return "Hello " . ${name} . "!";`;   // "Hello Bun!"
+await BunPHP`<?php return array_sum(${[1, 2, 3, 4]});`; // 10
+```
+
+Because they are expressions, they belong where an expression is valid rather
+than inside a PHP string literal:
+
+```ts
+await BunPHP`<?php return "Hello " . ${name};`;   // correct
+await BunPHP`<?php return "Hello ${name}";`;      // literal text, not the value
+```
+
+Snippets share one interpreter, and each runs as its own PHP request, so
+nothing leaks between them. `BunPHP.dispose()` shuts it down.
+
 ## Types
 
 The plugin writes a sidecar `hello.php.d.ts` next to each `.php` file, derived

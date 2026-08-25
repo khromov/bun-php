@@ -67,3 +67,22 @@ function bigInt(): int
 {
     return PHP_INT_MAX;
 }
+
+function withShutdown(): int
+{
+    register_shutdown_function(function () {
+        echo 'bye';
+    });
+    return 41;
+}
+
+function warnsThenExits(): void
+{
+    trigger_error('just a warning', E_USER_WARNING);
+    exit(0);
+}
+
+function toString(): string
+{
+    return 'shadowed the prototype';
+}

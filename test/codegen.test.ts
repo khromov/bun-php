@@ -28,6 +28,12 @@ describe("isBindableIdentifier", () => {
     expect(isBindableIdentifier("addAll2")).toBe(true);
   });
 
+  test("rejects names strict mode forbids binding", () => {
+    // Not reserved words, but a module is always strict.
+    expect(isBindableIdentifier("arguments")).toBe(false);
+    expect(isBindableIdentifier("eval")).toBe(false);
+  });
+
   test("rejects reserved words and invalid characters", () => {
     expect(isBindableIdentifier("delete")).toBe(false);
     expect(isBindableIdentifier("class")).toBe(false);
@@ -59,6 +65,21 @@ describe("generated module", () => {
     const { js } = build(`function delete() {}`);
     expect(js).not.toContain("export const delete =");
     expect(js).toContain(`export { __phpFn_delete as "delete" };`);
+  });
+
+  test("binds `arguments` under an alias, as strict mode demands", () => {
+    // `function arguments()` is legal PHP; `const arguments` is not legal in
+    // a module, which is always strict-mode code.
+    const { js } = build(`function arguments() {}`);
+    expect(js).not.toContain("export const arguments");
+    expect(js).toContain(`export { __phpFn_arguments as "arguments" };`);
+    expect(() => new Bun.Transpiler({ loader: "js" }).transformSync(js)).not.toThrow();
+  });
+
+  test("aliases a constant named eval", () => {
+    const { js } = build(`define('eval', 1);`);
+    expect(js).toContain(`export { __phpConst_eval as "eval" };`);
+    expect(() => new Bun.Transpiler({ loader: "js" }).transformSync(js)).not.toThrow();
   });
 
   test("emits constants as plain values", () => {

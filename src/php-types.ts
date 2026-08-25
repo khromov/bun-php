@@ -102,10 +102,8 @@ export function docTypeToTs(raw: string): string {
   const text = raw.trim();
   if (!text) return "any";
 
-  const parts = text
-    .split("|")
-    .map((p) => p.trim())
-    .filter(Boolean);
+  // Split on top-level `|` only — `array<int|string>` is one part, not two.
+  const parts = splitTopLevel(text, "|").filter(Boolean);
   if (parts.length === 0) return "any";
 
   return union(parts.map(convertDocPart));
@@ -132,12 +130,18 @@ function convertDocPart(part: string): string {
     return safe + "[]".repeat(suffixDepth);
   }
 
+  // A parenthesised group, e.g. the element of `(int|string)[]`.
+  if (text.startsWith("(") && text.endsWith(")")) {
+    return docTypeToTs(text.slice(1, -1));
+  }
+
   // `array<int>` / `array<string, int>` / `array<int, T>` / `list<int>`.
   const generic = /^(array|list|iterable)\s*<(.+)>$/i.exec(text);
   if (generic) {
-    const args = splitGenericArgs(generic[2] ?? "");
+    const args = splitTopLevel(generic[2] ?? "", ",").filter(Boolean);
     const value = args.length > 1 ? args[1] : args[0];
-    const inner = value ? convertDocPart(value) : "PhpValue";
+    // Recurse through docTypeToTs so a union value type survives intact.
+    const inner = value ? docTypeToTs(value) : "PhpValue";
     // Integer keys describe a list, so `array<int, T>` is `T[]` rather than a
     // string-keyed record.
     const keyed = args.length > 1 && !/^(int|integer)$/i.test((args[0] ?? "").trim());
@@ -159,21 +163,21 @@ function convertDocPart(part: string): string {
   return "Record<string, unknown>";
 }
 
-/** Split `string, int` on top-level commas only. */
-function splitGenericArgs(text: string): string[] {
+/** Split on a separator at depth 0 only, honouring `<>`, `()` and `{}`. */
+function splitTopLevel(text: string, separator: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let current = "";
   for (const ch of text) {
-    if (ch === "<") depth++;
-    else if (ch === ">") depth--;
-    if (ch === "," && depth === 0) {
+    if (ch === "<" || ch === "(" || ch === "{") depth++;
+    else if (ch === ">" || ch === ")" || ch === "}") depth = Math.max(0, depth - 1);
+    if (ch === separator && depth === 0) {
       out.push(current.trim());
       current = "";
       continue;
     }
     current += ch;
   }
-  if (current.trim()) out.push(current.trim());
+  out.push(current.trim());
   return out;
 }

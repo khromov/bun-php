@@ -1,4 +1,5 @@
 import type { BunPlugin, OnLoadResult, PluginBuilder } from "bun";
+import { basename, dirname } from "node:path";
 import { generateModule } from "./codegen";
 import { generateDts } from "./dts";
 import { parsePhp } from "./parse";
@@ -52,7 +53,7 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
             autoload: project.autoload,
           }),
           loader: "js",
-          resolveDir: path.slice(0, path.lastIndexOf("/")) || "/",
+          resolveDir: dirname(path),
         };
       });
     },
@@ -72,8 +73,7 @@ async function writeSidecar(
   _source: string,
 ): Promise<void> {
   const target = `${path}.d.ts`;
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  const next = generateDts(meta, name);
+  const next = generateDts(meta, basename(path));
 
   try {
     const existing = await Bun.file(target).text();

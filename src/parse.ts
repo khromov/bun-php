@@ -1,4 +1,5 @@
 import { Engine } from "php-parser";
+import { bindingNameFor } from "./codegen";
 import { PhpParseError } from "./errors";
 import { docTypeToTs, phpTypeToTs, type TypeNode } from "./php-types";
 import type {
@@ -41,6 +42,22 @@ export function parsePhp(source: string, filePath: string): PhpModuleMeta {
   const skipped: string[] = [];
   const seenExportNames = new Map<string, string>();
 
+  // Every export must be unique in the generated module: as an export name
+  // (where `default` is already taken by the default export) and as a local
+  // binding (where the generator's own identifiers live, and where names like
+  // `A-B` and `A.B` would otherwise sanitise into the same alias). `_default`
+  // is what the sidecar `.d.ts` binds its default export to.
+  const usedExportNames = new Set<string>(["default"]);
+  const usedBindingNames = new Set<string>(["__mod", "createPhpModule", "_default"]);
+
+  const claimJsNames = (name: string, kind: "function" | "constant"): boolean => {
+    const binding = bindingNameFor(name, kind);
+    if (usedExportNames.has(name) || usedBindingNames.has(binding)) return false;
+    usedExportNames.add(name);
+    usedBindingNames.add(binding);
+    return true;
+  };
+
   walk(ast.children ?? [], "", (node, namespacePrefix) => {
     if (node.kind === "function") {
       const fn = readFunction(node, namespacePrefix);
@@ -49,6 +66,12 @@ export function parsePhp(source: string, filePath: string): PhpModuleMeta {
       if (previous !== undefined) {
         skipped.push(
           `function ${fn.phpName}: export name "${fn.exportName}" collides with "${previous}"`,
+        );
+        return;
+      }
+      if (!claimJsNames(fn.exportName, "function")) {
+        skipped.push(
+          `function ${fn.phpName}: export name "${fn.exportName}" collides with another export`,
         );
         return;
       }
@@ -64,6 +87,10 @@ export function parsePhp(source: string, filePath: string): PhpModuleMeta {
         const value = staticEval(entry.value);
         if (value === NOT_STATIC) {
           skipped.push(`const ${name}: value is not a literal`);
+          continue;
+        }
+        if (!claimJsNames(name, "constant")) {
+          skipped.push(`const ${name}: export name "${name}" collides with another export`);
           continue;
         }
         constants.push({ name, value });
@@ -83,7 +110,12 @@ export function parsePhp(source: string, filePath: string): PhpModuleMeta {
           skipped.push(`define('${nameNode.value}'): value is not a literal`);
           return;
         }
-        constants.push({ name: String(nameNode.value), value });
+        const name = String(nameNode.value);
+        if (!claimJsNames(name, "constant")) {
+          skipped.push(`define('${name}'): export name "${name}" collides with another export`);
+          return;
+        }
+        constants.push({ name, value });
       }
     }
   });
@@ -271,8 +303,12 @@ function staticEval(node: Node | null | undefined): PhpValue | typeof NOT_STATIC
         ? String(node.value)
         : NOT_STATIC;
 
-    case "number":
-      return parsePhpNumber(String(node.value));
+    case "number": {
+      const value = parsePhpNumber(String(node.value));
+      // An overflowing literal (1e999) is INF in PHP, which JSON cannot
+      // represent — skipping beats silently exporting `null`.
+      return Number.isFinite(value) ? value : NOT_STATIC;
+    }
 
     case "boolean":
       return Boolean(node.value);
@@ -285,47 +321,78 @@ function staticEval(node: Node | null | undefined): PhpValue | typeof NOT_STATIC
       if (inner === NOT_STATIC) return NOT_STATIC;
       if (node.type === "-" && typeof inner === "number") return -inner;
       if (node.type === "+" && typeof inner === "number") return inner;
-      if (node.type === "!") return !inner;
+      if (node.type === "!") return !phpTruthy(inner);
       return NOT_STATIC;
     }
 
     case "array": {
       const items: Node[] = node.items ?? [];
-      // A keyed entry makes this an associative array, i.e. a JS object.
-      const keyed = items.some((item) => item?.key != null);
       if (items.some((item) => item?.unpack)) return NOT_STATIC;
 
-      if (!keyed) {
-        const out: PhpValue[] = [];
-        for (const item of items) {
-          const value = staticEval(item?.value);
-          if (value === NOT_STATIC) return NOT_STATIC;
-          out.push(value);
-        }
-        return out;
-      }
-
-      const out: Record<string, PhpValue> = {};
-      let nextIndex = 0;
+      // Follow PHP's own key semantics: bools, floats and canonical integer
+      // strings collapse into int keys, later entries overwrite earlier ones,
+      // and an implicit key is the highest int key seen so far plus one.
+      const entries = new Map<string | number, PhpValue>();
+      let maxIntKey: number | null = null;
       for (const item of items) {
         const value = staticEval(item?.value);
         if (value === NOT_STATIC) return NOT_STATIC;
+        let key: string | number;
         if (item.key == null) {
-          out[String(nextIndex++)] = value;
-          continue;
+          key = maxIntKey === null ? 0 : maxIntKey + 1;
+        } else {
+          const raw = staticEval(item.key);
+          if (raw === NOT_STATIC) return NOT_STATIC;
+          const normalised = phpArrayKey(raw);
+          if (normalised === NOT_STATIC) return NOT_STATIC;
+          key = normalised;
         }
-        const key = staticEval(item.key);
-        if (key === NOT_STATIC || key === null || typeof key === "object") {
-          return NOT_STATIC;
+        if (typeof key === "number") {
+          maxIntKey = maxIntKey === null ? key : Math.max(maxIntKey, key);
         }
-        out[String(key)] = value;
+        entries.set(key, value);
       }
+
+      // Keys 0..n-1 in order make a PHP list, i.e. a JS array.
+      const keys = [...entries.keys()];
+      if (keys.every((key, index) => key === index)) return [...entries.values()];
+      const out: Record<string, PhpValue> = {};
+      for (const [key, value] of entries) out[String(key)] = value;
       return out;
     }
 
     default:
       return NOT_STATIC;
   }
+}
+
+/** PHP truthiness: false, 0, 0.0, "", "0", [] and null are falsy. */
+function phpTruthy(value: PhpValue): boolean {
+  if (value === null || value === false) return false;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return value !== "" && value !== "0";
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+/**
+ * Normalise a PHP array key the way PHP does: bools and floats cast to int,
+ * canonical integer strings become ints, null becomes "". An array used as a
+ * key is a PHP TypeError, so it comes back as NOT_STATIC.
+ */
+function phpArrayKey(raw: PhpValue): string | number | typeof NOT_STATIC {
+  if (raw === null) return "";
+  if (typeof raw === "boolean") return raw ? 1 : 0;
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? Math.trunc(raw) : NOT_STATIC;
+  }
+  if (typeof raw === "string") {
+    return /^(0|-?[1-9]\d*)$/.test(raw) && Number.isSafeInteger(Number(raw))
+      ? Number(raw)
+      : raw;
+  }
+  return NOT_STATIC;
 }
 
 /** PHP numeric literals: `1_000`, `0x1F`, `0b1010`, `0o17` and legacy `017`. */
