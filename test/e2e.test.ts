@@ -127,11 +127,12 @@ describe("interpreter lifecycle", () => {
     expect(performance.now() - started).toBeLessThan(50);
   });
 
-  test("PHP request state does not leak between calls", async () => {
-    // php-wasm resets request-scoped state per run, so a `static` counter
-    // restarts every time rather than accumulating.
-    expect(await tick()).toBe(1);
-    expect(await tick()).toBe(1);
+  test("PHP state persists across calls", async () => {
+    // The default persistent mode keeps one PHP request alive, so a `static`
+    // counter accumulates the way it would in any long-running PHP process.
+    const first = await tick();
+    expect(await tick()).toBe(first + 1);
+    expect(await tick()).toBe(first + 2);
   });
 
   test("$eval runs arbitrary PHP against the same instance", async () => {

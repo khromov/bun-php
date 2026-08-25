@@ -7,6 +7,7 @@ import {
   unwrapEnvelope,
 } from "./marshal";
 import { bootPhp, createRuntimeId, nodeFsMountHandler } from "./php-runtime";
+import { PhpSession } from "./session";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PhpModuleApi, PhpModuleMeta, StdoutMode } from "./types";
@@ -24,6 +25,11 @@ export interface CreatePhpModuleOptions {
   root?: string | null;
   /** Composer autoloader to require before the module, if any. */
   autoload?: string | null;
+  /**
+   * Keep one long-running PHP request alive to serve every call. Default
+   * `true`. Set `false` for a fresh PHP request per call.
+   */
+  persist?: boolean;
 }
 
 /**
@@ -47,6 +53,7 @@ class PhpInstance {
   #booting: Promise<PHP> | null = null;
   #captured = "";
   #mounted = false;
+  #session: PhpSession | null = null;
 
   constructor(
     readonly id: string,
@@ -54,6 +61,7 @@ class PhpInstance {
     readonly stdout: StdoutMode,
     readonly root: string | null,
     readonly autoload: string | null,
+    readonly persist: boolean,
   ) {}
 
   /** Boot lazily, and only once even under concurrent first calls. */
@@ -67,7 +75,16 @@ class PhpInstance {
     const php = await bootPhp();
     await this.#populate(php);
     this.#php = php;
+    if (this.persist) this.#session = await this.#startSession(php);
     return php;
+  }
+
+  async #startSession(php: PHP): Promise<PhpSession> {
+    const session = new PhpSession(php, this.id, this.autoload, (text) =>
+      this.#emit(text),
+    );
+    await session.start();
+    return session;
   }
 
   /**
@@ -88,6 +105,35 @@ class PhpInstance {
     }
     php.mkdir(dirname(this.id));
     php.writeFile(this.id, this.source);
+  }
+
+  /** Call a PHP function by name, with already-JSON-safe arguments. */
+  async callFunction(fn: string, args: readonly unknown[]): Promise<unknown> {
+    if (this.persist) {
+      const session = await this.#session_();
+      return unwrapEnvelope(await session.run({ type: "call", fn, args }), fn);
+    }
+    return this.run(`\\${fn}(${encodeArgs(args)})`, fn);
+  }
+
+  /** Evaluate arbitrary PHP in the module's context. */
+  async evaluate(code: string): Promise<unknown> {
+    if (this.persist) {
+      const session = await this.#session_();
+      return unwrapEnvelope(await session.run({ type: "eval", code }), "$eval");
+    }
+    return this.run(`(static function () { ${code} })()`, "$eval");
+  }
+
+  /**
+   * The live session, restarted if a previous call killed it with `exit()`.
+   */
+  async #session_(): Promise<PhpSession> {
+    const php = await this.php();
+    if (!this.#session?.alive) {
+      this.#session = await this.#startSession(php);
+    }
+    return this.#session;
   }
 
   async run(expression: string, label: string): Promise<unknown> {
@@ -136,6 +182,8 @@ class PhpInstance {
   /** Swap in a fresh runtime, discarding every trace of PHP state. */
   async reset(): Promise<void> {
     const php = await this.php();
+    await this.#session?.stop().catch(() => {});
+    this.#session = null;
     await php.hotSwapPHPRuntime(await createRuntimeId());
     // php-wasm re-applies mounts across a runtime swap, so only the
     // written-source fallback needs restoring.
@@ -143,10 +191,13 @@ class PhpInstance {
       php.mkdir(dirname(this.id));
       php.writeFile(this.id, this.source);
     }
+    if (this.persist) this.#session = await this.#startSession(php);
     this.#captured = "";
   }
 
   async dispose(): Promise<void> {
+    await this.#session?.stop().catch(() => {});
+    this.#session = null;
     const php = this.#php;
     this.#php = null;
     this.#booting = null;
@@ -167,25 +218,24 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
   const stdout = options.stdout ?? "inherit";
   const root = options.root ?? null;
   const autoload = options.autoload ?? null;
+  const persist = options.persist ?? true;
 
   const cache = instanceCache();
   let instance = cache.get(id);
   // A changed source means the file was edited under --hot; rebuild from scratch.
-  if (instance && instance.source !== source) {
+  if (instance && (instance.source !== source || instance.persist !== persist)) {
     void instance.dispose();
     instance = undefined;
   }
   if (!instance) {
-    instance = new PhpInstance(id, source, stdout, root, autoload);
+    instance = new PhpInstance(id, source, stdout, root, autoload, persist);
     cache.set(id, instance);
   }
   const live = instance;
 
   const api: PhpModuleApi = {
     async call(name: string, args: readonly unknown[]): Promise<any> {
-      const phpName = functions[name] ?? name;
-      const expression = `\\${phpName}(${encodeArgs(args)})`;
-      return live.run(expression, phpName);
+      return live.callFunction(functions[name] ?? name, args);
     },
     async $ready(): Promise<void> {
       await live.php();
@@ -197,7 +247,7 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
       await live.dispose();
     },
     async $eval(code: string): Promise<any> {
-      return live.run(`(static function () { ${code} })()`, "$eval");
+      return live.evaluate(code);
     },
     async $php(): Promise<PHP> {
       return live.php();

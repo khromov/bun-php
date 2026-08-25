@@ -16,6 +16,7 @@ const build = (php: string) => {
       stdout: "inherit",
       root: null,
       autoload: null,
+      persist: true,
     }),
     dts: generateDts(meta, "mod.php"),
   };

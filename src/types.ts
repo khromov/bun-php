@@ -90,4 +90,12 @@ export interface PhpPluginOptions {
    * to disable.
    */
   autoload?: string | false;
+  /**
+   * Serve every call from one long-running PHP request. Default `true`.
+   *
+   * The autoloader is then registered once and loaded classes stay resident,
+   * which is dramatically faster, but PHP state (statics, globals) persists
+   * between calls. Set `false` for an isolated PHP request per call.
+   */
+  persist?: boolean;
 }

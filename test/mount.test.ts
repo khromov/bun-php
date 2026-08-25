@@ -135,9 +135,7 @@ describe("autoload", () => {
     expect(await moduleFor(main, source).call("useAutoload", [])).toBe("autoloaded");
   });
 
-  test("the autoloader is re-registered on every call", async () => {
-    // PHP request state resets between calls, so a class autoloaded once must
-    // still resolve on the next call.
+  test("an autoloader registered at boot still resolves on later calls", async () => {
     const dir = await scratch();
     await Bun.write(join(dir, "composer.json"), "{}");
     await mkdir(join(dir, "vendor"), { recursive: true });

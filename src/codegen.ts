@@ -33,11 +33,14 @@ export interface CodegenOptions {
   root: string | null;
   /** Composer autoloader to require before the module, if any. */
   autoload: string | null;
+  /** Serve calls from one long-running PHP request. */
+  persist: boolean;
 }
 
 /** Generate the JavaScript module that a `.php` import resolves to. */
 export function generateModule(options: CodegenOptions): string {
-  const { path, source, meta, runtimeSpecifier, stdout, root, autoload } = options;
+  const { path, source, meta, runtimeSpecifier, stdout, root, autoload, persist } =
+    options;
 
   const functions = Object.fromEntries(
     meta.functions.map((fn) => [fn.exportName, fn.phpName]),
@@ -55,6 +58,7 @@ export function generateModule(options: CodegenOptions): string {
     `  stdout: ${JSON.stringify(stdout)},`,
     `  root: ${JSON.stringify(root)},`,
     `  autoload: ${JSON.stringify(autoload)},`,
+    `  persist: ${JSON.stringify(persist)},`,
     `});`,
     "",
     "export default __mod;",

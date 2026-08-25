@@ -115,6 +115,91 @@ ${prelude}    require_once ${phpVar(modulePath as never)};
 `;
 }
 
+/**
+ * The PHP side of a long-running session.
+ *
+ * Requires the autoloader and the module exactly once, then blocks in
+ * `post_message_to_js()` waiting for jobs. Each job is answered with the same
+ * envelope shape `buildCallScript` produces, so `unwrapEnvelope` handles both
+ * execution modes unchanged.
+ *
+ * `\Throwable` covers thrown exceptions and PHP 8 `Error`s (an undefined
+ * function, a type error), so those leave the loop running. Only `exit()`,
+ * `die()` or a non-recoverable fatal ends the request, which the JavaScript
+ * side detects and reports.
+ */
+export function buildLoopScript(
+  modulePath: string,
+  autoloadPath?: string | null,
+): string {
+  const prelude = autoloadPath
+    ? `require_once ${phpVar(autoloadPath as never)};\n`
+    : "";
+
+  return `<?php
+ini_set('html_errors', '0');
+
+$__bunphp_encode = function (array $r): string {
+    try {
+        return json_encode($r, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (\\Throwable $e) {
+        return json_encode([
+            'type' => 'result',
+            'ok' => false,
+            'out' => $r['out'] ?? '',
+            'e' => [
+                'class' => 'JsonException',
+                'msg' => 'Return value could not be encoded: ' . $e->getMessage(),
+                'file' => '',
+                'line' => 0,
+                'trace' => '',
+            ],
+        ]);
+    }
+};
+
+ob_start();
+${prelude}require_once ${phpVar(modulePath as never)};
+$__bunphp_payload = $__bunphp_encode(['type' => 'ready', 'out' => ob_get_clean()]);
+
+while (true) {
+    $__bunphp_job = json_decode(post_message_to_js($__bunphp_payload), true);
+    $__bunphp_type = $__bunphp_job['type'] ?? '';
+    if ($__bunphp_type === 'shutdown' || !is_array($__bunphp_job)) {
+        break;
+    }
+
+    ob_start();
+    try {
+        if ($__bunphp_type === 'eval') {
+            $__bunphp_v = eval('return (static function () { ' . $__bunphp_job['code'] . ' })();');
+        } else {
+            $__bunphp_v = call_user_func_array(
+                $__bunphp_job['fn'],
+                $__bunphp_job['args'] ?? []
+            );
+        }
+        $__bunphp_r = ['ok' => true, 'v' => $__bunphp_v];
+    } catch (\\Throwable $e) {
+        $__bunphp_r = [
+            'ok' => false,
+            'e' => [
+                'class' => get_class($e),
+                'msg' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ],
+        ];
+    }
+
+    $__bunphp_r['out'] = ob_get_clean();
+    $__bunphp_r['type'] = 'result';
+    $__bunphp_payload = $__bunphp_encode($__bunphp_r);
+}
+`;
+}
+
 /** Split raw stdout into the script's own output and the result envelope. */
 export function decodeOutput(stdout: string): {
   out: string;

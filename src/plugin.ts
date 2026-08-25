@@ -22,6 +22,7 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
   const stdout = options.stdout ?? "inherit";
   const dtsMode = options.dts ?? "auto";
   const shouldMount = options.mount ?? true;
+  const persist = options.persist ?? true;
 
   return {
     name: "bun-php",
@@ -50,6 +51,7 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
             stdout,
             root: shouldMount ? project.root : null,
             autoload: project.autoload,
+            persist,
           }),
           loader: "js",
           resolveDir: path.slice(0, path.lastIndexOf("/")) || "/",
