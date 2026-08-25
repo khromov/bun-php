@@ -1,0 +1,145 @@
+import { phpVar } from "@php-wasm/util";
+import { PhpError, PhpFatalError } from "./errors";
+
+/**
+ * Marker separating the PHP script's own output from the result envelope.
+ *
+ * A sentinel is used rather than relying on output buffering alone because PHP
+ * flushes open buffers to stdout when a fatal error occurs, so captured output
+ * can still reach stdout ahead of the envelope.
+ */
+const SENTINEL = "\u0000BUNPHP\u0000";
+
+/** The same marker written as a PHP double-quoted literal. */
+const PHP_SENTINEL = '"\\x00BUNPHP\\x00"';
+
+interface SuccessEnvelope {
+  ok: true;
+  v: unknown;
+  out?: string;
+}
+
+interface ThrowableEnvelope {
+  ok: false;
+  e: { class: string; msg: string; file: string; line: number; trace: string };
+  out?: string;
+}
+
+interface FatalEnvelope {
+  ok: false;
+  fatal: { msg: string; file: string; line: number };
+  out?: string;
+}
+
+export type Envelope = SuccessEnvelope | ThrowableEnvelope | FatalEnvelope;
+
+/** Encode JS arguments as a PHP argument list. */
+export function encodeArgs(args: readonly unknown[]): string {
+  return args.map((arg) => phpVar(arg as never)).join(", ");
+}
+
+/**
+ * Build the PHP script for one call.
+ *
+ * Every call re-`require_once`s the module: php-wasm resets request-scoped PHP
+ * state (declared functions included) between runs, so the include is both
+ * necessary and safe from redeclaration errors.
+ */
+export function buildCallScript(modulePath: string, expression: string): string {
+  return `<?php
+ini_set('html_errors', '0');
+$__bunphp_sent = false;
+$__bunphp_emit = function (array $r) use (&$__bunphp_sent) {
+    if ($__bunphp_sent) { return; }
+    $__bunphp_sent = true;
+    $out = '';
+    while (ob_get_level() > 0) { $out = ob_get_clean() . $out; }
+    $r['out'] = $out;
+    try {
+        $json = json_encode($r, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+    } catch (\\Throwable $e) {
+        $json = json_encode([
+            'ok' => false,
+            'out' => $out,
+            'e' => [
+                'class' => 'JsonException',
+                'msg' => 'Return value could not be encoded: ' . $e->getMessage(),
+                'file' => '',
+                'line' => 0,
+                'trace' => '',
+            ],
+        ]);
+    }
+    echo ${PHP_SENTINEL} . $json;
+};
+register_shutdown_function(function () use ($__bunphp_emit, &$__bunphp_sent) {
+    if ($__bunphp_sent) { return; }
+    $err = error_get_last();
+    $__bunphp_emit([
+        'ok' => false,
+        'fatal' => [
+            'msg' => $err['message'] ?? 'PHP exited before returning a value',
+            'file' => $err['file'] ?? '',
+            'line' => $err['line'] ?? 0,
+        ],
+    ]);
+});
+ob_start();
+try {
+    require_once ${phpVar(modulePath as never)};
+    $__bunphp_v = ${expression};
+    $__bunphp_emit(['ok' => true, 'v' => $__bunphp_v]);
+} catch (\\Throwable $e) {
+    $__bunphp_emit([
+        'ok' => false,
+        'e' => [
+            'class' => get_class($e),
+            'msg' => $e->getMessage(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+            'trace' => $e->getTraceAsString(),
+        ],
+    ]);
+}
+`;
+}
+
+/** Split raw stdout into the script's own output and the result envelope. */
+export function decodeOutput(stdout: string): {
+  out: string;
+  envelope: Envelope | null;
+} {
+  const index = stdout.lastIndexOf(SENTINEL);
+  if (index === -1) return { out: stdout, envelope: null };
+
+  const before = stdout.slice(0, index);
+  const json = stdout.slice(index + SENTINEL.length);
+  try {
+    return { out: before, envelope: JSON.parse(json) as Envelope };
+  } catch {
+    return { out: stdout, envelope: null };
+  }
+}
+
+/** Turn an envelope into either the return value or a thrown error. */
+export function unwrapEnvelope(envelope: Envelope, label: string): unknown {
+  if (envelope.ok) return envelope.v;
+
+  if ("fatal" in envelope) {
+    throw new PhpFatalError(
+      `${label}: ${envelope.fatal.msg}`,
+      envelope.fatal.file,
+      envelope.fatal.line,
+    );
+  }
+
+  throw new PhpError(
+    `${label}: ${envelope.e.class}: ${envelope.e.msg}`,
+    envelope.e.class,
+    envelope.e.file,
+    envelope.e.line,
+    envelope.e.trace,
+  );
+}
+
+export { SENTINEL };

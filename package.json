@@ -1,7 +1,38 @@
 {
   "name": "bun-php",
-  "module": "index.ts",
+  "version": "0.1.0",
   "type": "module",
+  "description": "Import .php files into Bun and call PHP functions as async JavaScript functions.",
+  "keywords": [
+    "bun",
+    "bun-plugin",
+    "php",
+    "wasm",
+    "php-wasm"
+  ],
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./register": "./src/register.ts",
+    "./runtime": "./src/runtime.ts",
+    "./types": "./types/php.d.ts"
+  },
+  "files": [
+    "src",
+    "types",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "example": "bun run example/index.ts",
+    "typecheck": "bunx --package typescript@5.9.2 tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@php-wasm/node-8-5": "^3.1.51",
+    "@php-wasm/universal": "^3.1.51",
+    "@php-wasm/util": "^3.1.51",
+    "php-parser": "^3.7.0"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

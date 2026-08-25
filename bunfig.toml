@@ -1,0 +1,8 @@
+# Registering the plugin has to happen before any module importing a .php file
+# is resolved, which is what `preload` guarantees.
+preload = ["./src/register.ts"]
+
+# The top-level `preload` above is not applied to `bun test`, so it is repeated
+# here for the test runner.
+[test]
+preload = ["./src/register.ts"]

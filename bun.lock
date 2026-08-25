@@ -4,6 +4,12 @@
   "workspaces": {
     "": {
       "name": "bun-php",
+      "dependencies": {
+        "@php-wasm/node-8-5": "^3.1.51",
+        "@php-wasm/universal": "^3.1.51",
+        "@php-wasm/util": "^3.1.51",
+        "php-parser": "^3.7.0",
+      },
       "devDependencies": {
         "@types/bun": "latest",
       },
@@ -13,6 +19,18 @@
     },
   },
   "packages": {
+    "@php-wasm/logger": ["@php-wasm/logger@3.1.51", "", {}, "sha512-qqj10H2MsFK1LRYl5YpvWTW+RuHS24djGjtlngrbgQRw8kA4LLV971ZX2pbs1I3jdYnwBYaL+4b/GVYYapNYDA=="],
+
+    "@php-wasm/node-8-5": ["@php-wasm/node-8-5@3.1.51", "", { "dependencies": { "@php-wasm/universal": "3.1.51", "wasm-feature-detect": "1.8.0" } }, "sha512-Sc1Gsw3020Fmp84niTN2gi/9vI6upT4zJ3iN6zc3prP2kHoLc7wDRE4N2gfXERPa2xy5t+TA1sPyCMLm8BctnQ=="],
+
+    "@php-wasm/progress": ["@php-wasm/progress@3.1.51", "", { "dependencies": { "@php-wasm/logger": "3.1.51" } }, "sha512-vUIJw2shevB2cOw+3JA8DyLgVY8yvNwYHJGZvprNAsWBhtb4u5NG3ARg09FUXW+/yU+7enptID6wK6APNyRbdQ=="],
+
+    "@php-wasm/stream-compression": ["@php-wasm/stream-compression@3.1.51", "", { "dependencies": { "@php-wasm/util": "3.1.51" } }, "sha512-XR4QFG9FzP6Hf3QyGxv1v4hUzXc7L4Bpm4pZXSbvxJKpdZW2BZK/tR2S10rSDelT/Ymb4IEBw7Jr90BKppVTJA=="],
+
+    "@php-wasm/universal": ["@php-wasm/universal@3.1.51", "", { "dependencies": { "@php-wasm/logger": "3.1.51", "@php-wasm/progress": "3.1.51", "@php-wasm/stream-compression": "3.1.51", "@php-wasm/util": "3.1.51", "ini": "4.1.2" } }, "sha512-cTZwrRU2B1DeKHahFdxQB4Gy548q1QiiM4Pmy6VjGBWmi0iL2PfqrgyjJr85CcKuAbXAL8vDSZyIg7nHCKeQTg=="],
+
+    "@php-wasm/util": ["@php-wasm/util@3.1.51", "", {}, "sha512-RxX/e3p2uZfj0yRX/B9m6BKdJMEbfMtdw4Lcx9+8jkNfOzSZmFfnikx+jZtH5ze/DqQu+L3Wi6Ns7wQZFQEkVw=="],
+
     "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 
     "@types/node": ["@types/node@26.3.0", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-L3fgrnchriRC2ExBflb8j4uZZURHZfQsmQeyVzhjcHW4kkwVyo8/0h1B2MVzMTrYUJYu6G7EWs14hW/L9putqw=="],
@@ -59,8 +77,14 @@
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 
+    "ini": ["ini@4.1.2", "", {}, "sha512-AMB1mvwR1pyBFY/nSevUX6y8nJWS63/SzUKD3JyQn97s4xgIdgQPT75IRouIiBAN4yLQBUShNYVW0+UG25daCw=="],
+
+    "php-parser": ["php-parser@3.7.0", "", {}, "sha512-JRc1t78GZAEa+MuzVC5A5RJS1NDFTS4UnprUEu/NnsN9cyHbGZLUqghO9IQZUSCay62HYQiWd3PxyWAEF45zmA=="],
+
     "typescript": ["typescript@7.0.2", "", { "optionalDependencies": { "@typescript/typescript-aix-ppc64": "7.0.2", "@typescript/typescript-darwin-arm64": "7.0.2", "@typescript/typescript-darwin-x64": "7.0.2", "@typescript/typescript-freebsd-arm64": "7.0.2", "@typescript/typescript-freebsd-x64": "7.0.2", "@typescript/typescript-linux-arm": "7.0.2", "@typescript/typescript-linux-arm64": "7.0.2", "@typescript/typescript-linux-loong64": "7.0.2", "@typescript/typescript-linux-mips64el": "7.0.2", "@typescript/typescript-linux-ppc64": "7.0.2", "@typescript/typescript-linux-riscv64": "7.0.2", "@typescript/typescript-linux-s390x": "7.0.2", "@typescript/typescript-linux-x64": "7.0.2", "@typescript/typescript-netbsd-arm64": "7.0.2", "@typescript/typescript-netbsd-x64": "7.0.2", "@typescript/typescript-openbsd-arm64": "7.0.2", "@typescript/typescript-openbsd-x64": "7.0.2", "@typescript/typescript-sunos-x64": "7.0.2", "@typescript/typescript-win32-arm64": "7.0.2", "@typescript/typescript-win32-x64": "7.0.2" }, "bin": { "tsc": "bin/tsc" } }, "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="],
 
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
+
+    "wasm-feature-detect": ["wasm-feature-detect@1.8.0", "", {}, "sha512-zksaLKM2fVlnB5jQQDqKXXwYHLQUVH9es+5TOOHwGOVJOCeRBCiPjwSg+3tN2AdTCzjgli4jijCH290kXb/zWQ=="],
   }
 }
