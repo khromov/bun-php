@@ -27,13 +27,11 @@ function instance(): PhpModuleApi {
     meta: { functions: [], constants: [], skipped: [] },
     root: null,
     autoload: null,
-    // "capture" whichever tag is in use: the two differ only in what they do
-    // with the drained text, and `runtime.ts` writes `inherit` output once the
-    // request has already finished, so printing it here is the same thing
-    // observably. One mode keeps both tags on one interpreter — asking for
-    // "inherit" under a second id would boot a second WebAssembly runtime for
-    // no behavioural gain.
-    stdout: "capture",
+    // "inherit" so a snippet's output reaches the terminal as PHP writes it,
+    // rather than in one piece once the request is over. `BunPHP.capture`
+    // passes `$eval` a sink instead, which overrides this per call, so both
+    // tags share the one interpreter.
+    stdout: "inherit",
   });
 
   return inlineModule;
@@ -135,7 +133,8 @@ function toClosureBody(code: string): string {
  * Evaluate a snippet, either printing what it prints or handing it back.
  *
  * `capture: false` matches how an imported `.php` file behaves — PHP's `echo`
- * reaches the terminal, and the snippet's value is its top-level `return`.
+ * reaches the terminal as it is written, and the snippet's value is its
+ * top-level `return`.
  */
 function evaluate(
   strings: TemplateStringsArray,
@@ -156,20 +155,16 @@ function evaluate(
     // rejects the returned promise instead of throwing synchronously.
     const code = toClosureBody(compose(strings, values));
     const module = instance();
-    let value: unknown;
+
+    if (!capture) return module.$eval(code);
+
+    // The sink belongs to this call alone, so a snippet that throws part-way
+    // through printing cannot leave its output behind for the next one.
     let output = "";
-
-    try {
-      value = await module.$eval(code);
-    } finally {
-      // Drained even when the snippet threw, since PHP emits whatever it
-      // managed to print before the throw — left in the buffer, that output
-      // would surface as part of whichever snippet ran next.
-      output = module.$output();
-      if (!capture && output) process.stdout.write(output);
-    }
-
-    return capture ? (value ?? output) : value;
+    const value = await module.$eval(code, (text) => {
+      output += text;
+    });
+    return value ?? output;
   });
 }
 

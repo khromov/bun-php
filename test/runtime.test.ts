@@ -47,3 +47,51 @@ describe("default export", () => {
     cache().delete(id);
   });
 });
+
+describe("streaming output", () => {
+  test("output arrives while the script is still running", async () => {
+    const module = createPhpModule({
+      id: "/virtual/stream-live.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+    });
+
+    const started = performance.now();
+    const arrivals: number[] = [];
+    await module.$eval(`echo "a"; usleep(300000); echo "b";`, () => {
+      arrivals.push(performance.now() - started);
+    });
+
+    expect(arrivals.length).toBeGreaterThanOrEqual(2);
+    // Handed over in one piece at the end, the two would land together; the
+    // gap between them can only exist if each was released as PHP wrote it.
+    expect(arrivals.at(-1)! - arrivals[0]!).toBeGreaterThan(200);
+
+    await module.$dispose();
+  });
+
+  test("a sink takes the output away from the stdout mode", async () => {
+    const module = createPhpModule({
+      id: "/virtual/stream-sink.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "capture",
+    });
+
+    let sunk = "";
+    await module.$eval(`echo "to the sink";`, (text) => {
+      sunk += text;
+    });
+    expect(sunk).toBe("to the sink");
+    expect(module.$output()).toBe("");
+
+    // Without one, the module's own mode applies again.
+    await module.$eval(`echo "to the module";`);
+    expect(module.$output()).toBe("to the module");
+
+    await module.$dispose();
+  });
+});

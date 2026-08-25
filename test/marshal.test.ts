@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { decodeOutput, encodeArgs, encodeValue, SENTINEL } from "../src/marshal";
+import {
+  decodeOutput,
+  encodeArgs,
+  encodeValue,
+  EnvelopeSplitter,
+  SENTINEL,
+} from "../src/marshal";
 
 describe("encodeArgs", () => {
   test("drops trailing undefined so PHP defaults apply", () => {
@@ -73,5 +79,75 @@ describe("decodeOutput", () => {
   test("an unparseable envelope returns everything as output", () => {
     const raw = `${SENTINEL}{oops${SENTINEL}`;
     expect(decodeOutput(raw)).toEqual({ out: raw, envelope: null });
+  });
+});
+
+describe("EnvelopeSplitter", () => {
+  const wrap = (json: string) => `${SENTINEL}${json}${SENTINEL}`;
+
+  /** Feed the chunks in order, returning what was emitted and when. */
+  function split(chunks: string[]) {
+    const emitted: string[] = [];
+    const splitter = new EnvelopeSplitter((text) => emitted.push(text));
+    for (const chunk of chunks) splitter.push(chunk);
+    const envelope = splitter.end();
+    return { emitted, envelope, out: emitted.join("") };
+  }
+
+  test("emits output as it arrives, before the envelope closes", () => {
+    const emitted: string[] = [];
+    const splitter = new EnvelopeSplitter((text) => emitted.push(text));
+
+    splitter.push("log 1\n");
+    expect(emitted).toEqual(["log 1\n"]);
+    splitter.push("log 2\n");
+    expect(emitted).toEqual(["log 1\n", "log 2\n"]);
+
+    splitter.push(wrap('{"ok":true,"v":1}'));
+    expect(splitter.end()).toEqual({ ok: true, v: 1 });
+    expect(emitted.join("")).toBe("log 1\nlog 2\n");
+  });
+
+  test("a sentinel split across chunks is still recognised", () => {
+    const raw = `out${wrap('{"ok":true,"v":7}')}`;
+    for (let at = 1; at < raw.length; at++) {
+      const { out, envelope } = split([raw.slice(0, at), raw.slice(at)]);
+      expect(envelope).toEqual({ ok: true, v: 7 });
+      expect(out).toBe("out");
+    }
+  });
+
+  test("output is not held back waiting for a sentinel that never comes", () => {
+    // A partial marker is withheld, but only the part that could still grow
+    // into one — never the text in front of it.
+    const emitted: string[] = [];
+    const splitter = new EnvelopeSplitter((text) => emitted.push(text));
+    splitter.push(`done\u0000BUN`);
+    expect(emitted.join("")).toBe("done");
+    expect(splitter.end()).toBeNull();
+    expect(emitted.join("")).toBe(`done\u0000BUN`);
+  });
+
+  test("a sentinel pair that is not JSON is put back as output", () => {
+    const raw = `a${wrap("not json")}b`;
+    const { out, envelope } = split([raw]);
+    expect(envelope).toBeNull();
+    expect(out).toBe(raw);
+  });
+
+  test("the last envelope wins, and the earlier one becomes output", () => {
+    const first = wrap('{"ok":true,"v":1}');
+    const second = wrap('{"ok":true,"v":2}');
+    const { out, envelope } = split([`a${first}b${second}c`]);
+    expect(envelope).toEqual({ ok: true, v: 2 });
+    expect(out).toBe(`a${first}bc`);
+  });
+
+  test("tail keeps the end of the output for error reporting", () => {
+    const splitter = new EnvelopeSplitter(() => {});
+    splitter.push("x".repeat(9000) + "END");
+    splitter.end();
+    expect(splitter.tail).toEndWith("END");
+    expect(splitter.tail.length).toBeLessThanOrEqual(8192);
   });
 });

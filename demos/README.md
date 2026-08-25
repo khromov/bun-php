@@ -69,11 +69,16 @@ on the JavaScript side has to relay the output:
 
 ```ts
 import { BunPHP } from "bun-php";
-await BunPHP`<?php echo "Hello from PHP!", PHP_EOL; ?>`;   // Hello from PHP!
+await BunPHP`<?php echo "Hello from PHP!"; ?>`;   // Hello from PHP!
 ```
 
 `BunPHP.capture` is the other half: it prints nothing and resolves to the
 output instead.
+
+The demo then prints three lines a second apart from inside a single snippet,
+to show that output is released as PHP writes it rather than at the end of the
+request — the `[php]` stamps are the moment PHP produced each line, and they
+should reach the terminal a second apart too.
 
 **`bun run phpinfo` serves the real page.** `Bun.serve()` on port 8080 hands
 back the output of PHP's own `phpinfo()`, with a header noting what produced

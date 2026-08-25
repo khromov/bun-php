@@ -2,7 +2,7 @@ import type { PHP } from "@php-wasm/universal";
 import { PhpFatalError } from "./errors";
 import {
   buildCallScript,
-  decodeOutput,
+  EnvelopeSplitter,
   encodeArgs,
   unwrapEnvelope,
 } from "./marshal";
@@ -107,33 +107,64 @@ class PhpInstance {
     php.writeFile(this.id, this.source);
   }
 
-  async run(expression: string, label: string): Promise<unknown> {
-    const task = this.#run(expression, label);
+  async run(
+    expression: string,
+    label: string,
+    sink?: (text: string) => void,
+  ): Promise<unknown> {
+    const task = this.#run(expression, label, sink);
     this.#inflight.add(task);
     const settle = () => this.#inflight.delete(task);
     task.then(settle, settle);
     return task;
   }
 
-  async #run(expression: string, label: string): Promise<unknown> {
+  async #run(
+    expression: string,
+    label: string,
+    sink?: (text: string) => void,
+  ): Promise<unknown> {
     const php = await this.php();
     const script = buildCallScript(this.id, expression, this.autoload);
 
     const response = await php.runStream({ code: script });
-    const [raw, exitCode, stderr] = await Promise.all([
-      response.stdoutText,
+    // Read stdout as it is produced rather than awaiting `stdoutText`, so that
+    // a slow script's output appears while it is still running. The splitter
+    // keeps the envelope out of what gets emitted.
+    // A sink takes the output instead of this instance's stdout mode, and gets
+    // it chunk by chunk — that is what `BunPHP.capture` collects.
+    const emit = sink ?? ((text: string) => this.#emit(text));
+    const splitter = new EnvelopeSplitter(emit);
+    const decoder = new TextDecoder();
+    const reader = response.stdout.getReader();
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // `stream: true` so a multi-byte character split across two chunks is
+        // decoded once both halves have arrived.
+        splitter.push(decoder.decode(value, { stream: true }));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    splitter.push(decoder.decode());
+    const envelope = splitter.end();
+    // Only buffers the script itself opened and left open reach the envelope
+    // now; everything else has already been emitted above.
+    if (envelope?.out) emit(envelope.out);
+
+    const [exitCode, stderr] = await Promise.all([
       response.exitCode,
       response.stderrText,
     ]);
 
-    const { out, envelope } = decodeOutput(raw);
-    // `out` is anything PHP flushed ahead of the envelope (which happens on a
-    // fatal error); `envelope.out` is the normally buffered script output.
-    this.#emit(out);
-    if (envelope?.out) this.#emit(envelope.out);
-
     if (!envelope) {
-      const detail = [stderr.trim(), out.trim()].filter(Boolean).join("\n");
+      const detail = [stderr.trim(), splitter.tail.trim()]
+        .filter(Boolean)
+        .join("\n");
       throw new PhpFatalError(
         `${label}: PHP produced no result (exit code ${exitCode})${
           detail ? `\n${detail}` : ""
@@ -259,10 +290,13 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
     async $dispose(): Promise<void> {
       await live.dispose();
     },
-    async $eval(code: string): Promise<any> {
+    async $eval(
+      code: string,
+      onOutput?: (text: string) => void,
+    ): Promise<any> {
       // The newline keeps a trailing `//` or `#` comment in `code` from
       // swallowing the closing brace.
-      return live.run(`(static function () { ${code}\n})()`, "$eval");
+      return live.run(`(static function () { ${code}\n})()`, "$eval", onOutput);
     },
     async $php(): Promise<PHP> {
       return live.php();

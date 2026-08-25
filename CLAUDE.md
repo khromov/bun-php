@@ -71,9 +71,19 @@ mtime and retriggers the watcher in a loop.
 
 **The call protocol is a JSON envelope between a sentinel pair**, not plain stdout parsing. PHP flushes open
 output buffers to stdout on a fatal error, so the script's own `echo` output can land ahead of the envelope,
-and user shutdown functions or destructors can print after it; `decodeOutput` parses the JSON between the
-*last* sentinel pair and treats everything around it as script output. Any change to `buildCallScript` needs
-the matching change in `decodeOutput`/`unwrapEnvelope`.
+and user shutdown functions or destructors can print after it; the envelope is the JSON between the *last*
+sentinel pair, and everything around it is script output. Any change to `buildCallScript` needs the matching
+change in `EnvelopeSplitter`/`unwrapEnvelope`.
+
+**Output is streamed, which is why `buildCallScript` does not `ob_start()`.** The script runs unbuffered
+(`ob_implicit_flush(true)`) so `echo` reaches stdout as it happens, and `runtime.ts` reads `runStream()`'s
+`response.stdout` chunk by chunk instead of awaiting `stdoutText` — a slow script prints while it is still
+running. `EnvelopeSplitter` in `marshal.ts` does the classifying, which is harder than it is over a complete
+string: a sentinel can straddle a chunk boundary (so a tail that could still grow into one is held back), a
+sentinel pair whose contents are not JSON was never an envelope (so it is put back on the wire verbatim), and
+*last pair wins* means output after an envelope is held until the stream ends, in case a later one supersedes
+it. `decodeOutput` is the same splitter fed a whole string, so the two cannot drift. Only buffers the *user's*
+code opened and left open still arrive in the envelope's `out` field.
 
 **Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module each time because
 php-wasm resets request-scoped state (declared functions included) between runs. That is also why `static`
@@ -88,11 +98,12 @@ elsewhere). Mounts survive `hotSwapPHPRuntime`, so `$reset()` must *not* re-moun
 is why `demos/` works at all, and why warm-call cost tracks how much the library does per call.
 
 **The inline tag prints; `BunPHP.capture` returns.** `BunPHP` matches the plugin's `stdout: "inherit"`
-default — `echo` goes to the terminal and the promise resolves to the top-level `return` (or `null`) — while
-`BunPHP.capture` resolves to the output and prints nothing. Both share *one* interpreter, created with
-`stdout: "capture"`: `runtime.ts` writes `inherit` output only once the request has finished, so having the
-tag print the drained text is observably identical and avoids booting a second WebAssembly runtime. The drain
-lives in a `finally`, or a snippet that throws mid-output would leave its text to surface inside the next one.
+default — `echo` goes to the terminal as PHP writes it, and the promise resolves to the top-level `return`
+(or `null`) — while `BunPHP.capture` resolves to the output and prints nothing. Both share *one* interpreter,
+created `"inherit"`: `capture` passes `$eval` an output sink, which overrides the instance's stdout mode for
+that call alone. A sink rather than a shared buffer is what keeps a snippet that throws part-way through
+printing from leaving its output behind for the next snippet — and it is the reason `capture` did not have to
+cost a second WebAssembly runtime.
 
 **Inline snippets interpolate as expressions, not text.** `src/inline.ts` runs every interpolated value
 through `encodeValue()` from `marshal.ts`, so a value can never be executed as code (and `undefined`/BigInt

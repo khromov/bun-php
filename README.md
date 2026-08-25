@@ -40,6 +40,22 @@ Registration has to happen through `preload`. Calling `Bun.plugin()` from the
 same file that imports a `.php` file does not work, because ES module
 resolution happens before the plugin registers.
 
+## Can I do the meme thing?
+
+Yes!
+
+```php
+import { BunPHP } from "bun-php";
+
+await BunPHP`<?php echo "Hello, World!"; ?>`;
+
+> Hello, World!
+```
+
+The original tweet:
+
+![The original tweet](.github/images/screenshot.png)
+
 ## What gets exported
 
 Every top-level `function` becomes an async JavaScript function, and every
@@ -63,10 +79,10 @@ function addAll(int ...$numbers): int
 ```ts
 import phpModule, { greet, addAll, GREETING } from "./hello.php";
 
-await greet("world");        // "Hello, world!"
-await greet("Bun", "Hey");   // "Hey, Bun!"
-await addAll(1, 2, 3);       // 6
-GREETING;                    // "Hello" — a plain value, no await, no PHP boot
+await greet("world"); // "Hello, world!"
+await greet("Bun", "Hey"); // "Hey, Bun!"
+await addAll(1, 2, 3); // 6
+GREETING; // "Hello" — a plain value, no await, no PHP boot
 ```
 
 Class methods, closures and arrow functions are ignored; only real top-level
@@ -88,33 +104,34 @@ For a snippet that does not warrant a file, tag a template with `BunPHP`:
 ```ts
 import { BunPHP } from "bun-php";
 
-await BunPHP`<?php echo "Hello world";`;   // prints "Hello world"
-await BunPHP`<?php return 40 + 2;`;        // 42
+await BunPHP`<?php echo "Hello world";`; // prints "Hello world"
+await BunPHP`<?php return 40 + 2;`; // 42
 ```
 
-PHP prints for itself: `echo` reaches the terminal, exactly as it does from an
-imported `.php` file and from the PHP CLI. The promise resolves to the value of
-a top-level `return`, or to `null` — PHP's own answer for a closure that returns
-nothing — when there is no `return`.
+PHP prints for itself: `echo` reaches the terminal _as PHP writes it_, exactly
+as it does from an imported `.php` file and from the PHP CLI — a long-running
+script prints while it is still running rather than in one piece at the end.
+The promise resolves to the value of a top-level `return`, or to `null` — PHP's
+own answer for a closure that returns nothing — when there is no `return`.
 
 To take that output as a value instead, use `BunPHP.capture`, which prints
 nothing:
 
 ```ts
-await BunPHP.capture`<?php echo "Hello world";`;   // "Hello world"
-await BunPHP.capture`<?php return 40 + 2;`;        // 42, still — a return wins
-await BunPHP.capture`<?php $unused = 1;`;          // ""  — printed nothing
+await BunPHP.capture`<?php echo "Hello world";`; // "Hello world"
+await BunPHP.capture`<?php return 40 + 2;`; // 42, still — a return wins
+await BunPHP.capture`<?php $unused = 1;`; // ""  — printed nothing
 ```
 
 Tags behave as they do in a PHP file, where both are optional:
 
 ```ts
-await BunPHP.capture`<?php echo "hi";`;              // "hi"  — no closing tag
-await BunPHP.capture`<?php echo "hi"; ?>`;           // "hi"  — closing tag
-await BunPHP`return 1 + 1;`;                         // 2     — no tags at all
-await BunPHP.capture`<?= 6 * 7 ?>`;                  // "42"  — short echo
-await BunPHP.capture`<p>a</p><?php echo "b";`;       // "<p>a</p>b" — markup first
-await BunPHP.capture`<?php echo "a"; ?><i>b</i>`;    // "a<i>b</i>" — switching modes
+await BunPHP.capture`<?php echo "hi";`; // "hi"  — no closing tag
+await BunPHP.capture`<?php echo "hi"; ?>`; // "hi"  — closing tag
+await BunPHP`return 1 + 1;`; // 2     — no tags at all
+await BunPHP.capture`<?= 6 * 7 ?>`; // "42"  — short echo
+await BunPHP.capture`<p>a</p><?php echo "b";`; // "<p>a</p>b" — markup first
+await BunPHP.capture`<?php echo "a"; ?><i>b</i>`; // "a<i>b</i>" — switching modes
 ```
 
 A snippet with no tags at all is taken as PHP code rather than markup, since
@@ -128,7 +145,7 @@ source, so a value can never be executed as code:
 
 ```ts
 const name = "Bun";
-await BunPHP`<?php return "Hello " . ${name} . "!";`;   // "Hello Bun!"
+await BunPHP`<?php return "Hello " . ${name} . "!";`; // "Hello Bun!"
 await BunPHP`<?php return array_sum(${[1, 2, 3, 4]});`; // 10
 ```
 
@@ -136,8 +153,8 @@ Because they are expressions, they belong where an expression is valid rather
 than inside a PHP string literal:
 
 ```ts
-await BunPHP`<?php return "Hello " . ${name};`;   // correct
-await BunPHP`<?php return "Hello ${name}";`;      // literal text, not the value
+await BunPHP`<?php return "Hello " . ${name};`; // correct
+await BunPHP`<?php return "Hello ${name}";`; // literal text, not the value
 ```
 
 Snippets share one interpreter — `BunPHP` and `BunPHP.capture` use the same one
@@ -159,17 +176,17 @@ TypeScript picks this up automatically for `import ... from "./hello.php"`, so
 you get real autocomplete and type errors. Commit the sidecars or add
 `*.php.d.ts` to `.gitignore` — either works.
 
-| PHP | TypeScript |
-| --- | --- |
-| `int`, `float` | `number` |
-| `string` | `string` |
-| `bool` | `boolean` |
-| `array` | `PhpValue[] \| { [key: string]: PhpValue }` |
-| `void` | `void` |
-| `mixed`, no hint | `any` |
-| `?T`, `T\|null` | `T \| null` |
-| `A\|B` | `A \| B` |
-| a class name | `Record<string, unknown>` |
+| PHP              | TypeScript                                  |
+| ---------------- | ------------------------------------------- |
+| `int`, `float`   | `number`                                    |
+| `string`         | `string`                                    |
+| `bool`           | `boolean`                                   |
+| `array`          | `PhpValue[] \| { [key: string]: PhpValue }` |
+| `void`           | `void`                                      |
+| `mixed`, no hint | `any`                                       |
+| `?T`, `T\|null`  | `T \| null`                                 |
+| `A\|B`           | `A \| B`                                    |
+| a class name     | `Record<string, unknown>`                   |
 
 Where a type hint is missing, `@param` / `@return` docblock tags are used
 instead. A bare `array` hint also defers to the docblock, so
@@ -227,13 +244,13 @@ The default export carries the interpreter controls:
 ```ts
 import php from "./hello.php";
 
-await php.$ready();              // boot without calling anything
+await php.$ready(); // boot without calling anything
 await php.$eval("return PHP_VERSION;");
-await php.$reset();              // discard all PHP state, keep the module
-await php.$dispose();            // shut the interpreter down
-const raw = await php.$php();    // the underlying php-wasm PHP instance
-php.$meta;                       // what the parser found in this file
-await php.call("greet", ["x"]);  // call by name
+await php.$reset(); // discard all PHP state, keep the module
+await php.$dispose(); // shut the interpreter down
+const raw = await php.$php(); // the underlying php-wasm PHP instance
+php.$meta; // what the parser found in this file
+await php.call("greet", ["x"]); // call by name
 ```
 
 ## Plugin options
@@ -249,13 +266,13 @@ Bun.build({
 });
 ```
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `dts` | `"auto"` | Write sidecar types. `"auto"` writes unless producing a bundle. |
-| `stdout` | `"inherit"` | Where PHP's `echo` output goes: `"inherit"`, `"capture"` (drain with `php.$output()`), or `"ignore"`. |
-| `filter` | `/\.php$/` | Which files to handle. |
-| `mount` | `true` | Mount the project directory so sibling `require`s and Composer resolve. |
-| `autoload` | auto | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables. |
+| Option     | Default     | Meaning                                                                                               |
+| ---------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `dts`      | `"auto"`    | Write sidecar types. `"auto"` writes unless producing a bundle.                                       |
+| `stdout`   | `"inherit"` | Where PHP's `echo` output goes: `"inherit"`, `"capture"` (drain with `php.$output()`), or `"ignore"`. |
+| `filter`   | `/\.php$/`  | Which files to handle.                                                                                |
+| `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve.                               |
+| `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.     |
 
 Note that the `bun build` **CLI** cannot use plugins at all — use the
 `Bun.build()` JS API, or `[serve.static] plugins = ["bun-php"]` for the dev
@@ -285,7 +302,7 @@ build automatically.
 
 **Each call is an isolated PHP request.** php-wasm resets request-scoped state
 between runs, so `static` variables, globals and superglobals do not carry over
-from one call to the next. The *interpreter* is reused (that is what makes
+from one call to the next. The _interpreter_ is reused (that is what makes
 calls fast), but PHP userland state is not.
 
 ```php

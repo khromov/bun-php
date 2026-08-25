@@ -59,8 +59,13 @@ export interface PhpModuleApi {
   $reset(): Promise<void>;
   /** Shut the interpreter down and drop it from the cache. */
   $dispose(): Promise<void>;
-  /** Evaluate arbitrary PHP. The module's own file is already required. */
-  $eval(code: string): Promise<any>;
+  /**
+   * Evaluate arbitrary PHP. The module's own file is already required.
+   *
+   * `onOutput` receives the script's output as PHP produces it, and takes it
+   * away from the module's `stdout` mode: nothing is printed or captured.
+   */
+  $eval(code: string, onOutput?: (text: string) => void): Promise<any>;
   /** The underlying php-wasm instance, for escape-hatch use. */
   $php(): Promise<PHP>;
   /** Drain output collected under `stdout: "capture"`. */
