@@ -7,6 +7,7 @@ import {
   unwrapEnvelope,
 } from "./marshal";
 import { bootPhp, nodeFsMountHandler } from "./php-runtime";
+import { applyRuntimeOptions, type PhpRuntimeOptions } from "./interpreter";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PhpModuleApi, PhpModuleMeta, StdoutMode } from "./types";
@@ -24,6 +25,21 @@ export interface CreatePhpModuleOptions {
   root?: string | null;
   /** Composer autoloader to require before the module, if any. */
   autoload?: string | null;
+  /** PHP version, ini, spawn handling and extra mounts. */
+  runtime?: PhpRuntimeOptions;
+}
+
+/**
+ * Identity of an interpreter's configuration, for the cache comparison below.
+ *
+ * Functions carry no stable serialisation, so `loader` and `spawn` fall back to
+ * reference identity — a caller passing a fresh closure each time gets a fresh
+ * interpreter, which is the safe direction to be wrong in.
+ */
+function runtimeKey(options: PhpRuntimeOptions | undefined): string {
+  if (!options) return "";
+  const { loader, spawn, ...rest } = options;
+  return JSON.stringify(rest);
 }
 
 /**
@@ -58,6 +74,7 @@ class PhpInstance {
     readonly stdout: StdoutMode,
     readonly root: string | null,
     readonly autoload: string | null,
+    readonly runtime: PhpRuntimeOptions = {},
   ) {}
 
   /** Boot lazily, and only once even under concurrent first calls. */
@@ -81,7 +98,8 @@ class PhpInstance {
   }
 
   async #boot(): Promise<PHP> {
-    const php = await bootPhp();
+    const php = await bootPhp(this.runtime);
+    await applyRuntimeOptions(php, this.runtime);
     await this.#populate(php);
     this.#php = php;
     return php;
@@ -254,23 +272,29 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
   const stdout = options.stdout ?? "inherit";
   const root = options.root ?? null;
   const autoload = options.autoload ?? null;
+  const runtime = options.runtime ?? {};
 
   const cache = instanceCache();
   let instance = cache.get(id);
   // A changed source (the file was edited under --hot) or changed plugin
-  // options mean the cached interpreter no longer matches; rebuild it.
+  // options mean the cached interpreter no longer matches; rebuild it. The
+  // runtime options belong here too, or asking for a different PHP version
+  // silently hands back an interpreter running the old one.
   if (
     instance &&
     (instance.source !== source ||
       instance.stdout !== stdout ||
       instance.root !== root ||
-      instance.autoload !== autoload)
+      instance.autoload !== autoload ||
+      runtimeKey(instance.runtime) !== runtimeKey(runtime) ||
+      instance.runtime.loader !== runtime.loader ||
+      instance.runtime.spawn !== runtime.spawn)
   ) {
     void instance.dispose();
     instance = undefined;
   }
   if (!instance) {
-    instance = new PhpInstance(id, source, stdout, root, autoload);
+    instance = new PhpInstance(id, source, stdout, root, autoload, runtime);
     cache.set(id, instance);
   }
   const live = instance;

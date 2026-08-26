@@ -52,7 +52,8 @@ function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, dec
 | `src/inline.ts` | The `` BunPHP`...` `` tagged template for file-less snippets |
 | `src/marshal.ts` | The JS ⇄ PHP call protocol |
 | `src/project.ts` | Walks up from a `.php` file to find its Composer root and autoloader |
-| `src/php-runtime.ts` | The only module importing `@php-wasm/*`, plus the NODEFS mount handler |
+| `src/php-runtime.ts` | The only module importing `@php-wasm/*`, the version→build map, plus the NODEFS mount handler |
+| `src/interpreter.ts` | `createInterpreter` — a configured interpreter with no `.php` file behind it |
 | `types/php.d.ts` | Fallback `*.php` module declaration for users not generating sidecars |
 
 ## Things that will bite you
@@ -124,9 +125,31 @@ constant through the real loader for exactly that reason.
 The precedence rule lives in `chooseType` in `parse.ts`: a real type declaration wins, *except* that bare
 `array` and `mixed` defer to a `@param`/`@return` docblock tag.
 
-**PHP version is a one-line change**: the `@php-wasm/node-8-5` import in `php-runtime.ts` plus the matching
-dependency. `@php-wasm/node` is deliberately avoided — it statically imports a NAN native addon that throws at
-module-evaluation time when its binding fails to load.
+**PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
+`@php-wasm/node-X-Y` resolved with a dynamic `import()`. Only 8.5 is a real dependency; the rest are optional
+peer dependencies, because each build is tens of MB of wasm. Adding an option that changes the interpreter
+means adding it to the cache comparison in `createPhpModule` too — `runtimeKey()` covers the serialisable
+options and `loader`/`spawn` are compared by identity, since without that a caller asking for a different PHP
+version silently gets back the cached interpreter running the old one. `@php-wasm/node` is deliberately
+avoided — it statically imports a NAN native addon that throws at module-evaluation time when its binding
+fails to load.
+
+**`PHP.cli()` consumes its instance.** It calls `exit()` on the runtime when the command finishes, and a
+second `cli()` on the same instance returns exit code **-1 with no output and no error at all** — a silent
+failure. `PhpInterpreter` therefore boots a replacement between commands and replays the staged filesystem
+work (`#staged`) onto it, which is why `mount`/`writeFile`/`mkdir`/`ini` record a closure rather than just
+acting. `#stage` awaits `php()` *before* recording, because `#boot` replays what is already staged and
+recording first would run the new step twice on the very first call.
+
+**Neither timeouts nor parallelism work the way you would assume**, both measured:
+
+- A running request cannot be interrupted. `PHP.exit()` mid-call returns without stopping it (a busy loop then
+  ran to completion), and `max_execution_time` is ignored — a 2s limit let an 8s loop finish. So `timeoutMs`
+  bounds *waiting* only: it rejects and retires the interpreter while the PHP keeps burning CPU. Say so
+  wherever it is documented; a timeout that implies cancellation is worse than none.
+- Interpreters do not overlap. Two concurrent 1s calls on two instances take ~2s (ratio 1.96), because the
+  wasm holds the thread. That is why there is no pool API — a second interpreter in-process buys nothing, and
+  `test/interpreter.test.ts` pins the ratio so nobody adds one on a hunch.
 
 **Sidecar `.d.ts` files:** `test/fixtures/*.php.d.ts` and `demos/php/*.php.d.ts` are gitignored (regenerated
 on the next run); `example/hello.php.d.ts` is committed on purpose as a worked example. `demos/vendor/` is

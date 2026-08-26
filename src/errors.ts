@@ -24,6 +24,23 @@ export class PhpError extends Error {
   }
 }
 
+/**
+ * A call outlived its deadline.
+ *
+ * The PHP work is **not** stopped — php-wasm offers no way to interrupt a
+ * running request — so this hands control back to the caller and retires the
+ * interpreter rather than pretending to have cancelled anything.
+ */
+export class PhpTimeoutError extends Error {
+  override readonly name = "PhpTimeoutError";
+  constructor(
+    message: string,
+    readonly timeoutMs: number,
+  ) {
+    super(message);
+  }
+}
+
 /** A PHP fatal error (undefined function, `exit()`, memory exhaustion, ...). */
 export class PhpFatalError extends Error {
   override readonly name = "PhpFatalError";

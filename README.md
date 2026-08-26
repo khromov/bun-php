@@ -253,6 +253,89 @@ php.$meta; // what the parser found in this file
 await php.call("greet", ["x"]); // call by name
 ```
 
+## Driving PHP directly
+
+Importing a `.php` file suits calling library code. Driving a **PHP tool** —
+a phar, a linter, a formatter — needs something else: an argument list, a
+directory to work on that is only known at call time, and a `php.ini` that fits
+the job. `createInterpreter` is that entry point. It involves no `.php` import,
+no codegen and no `preload`:
+
+```ts
+import { createInterpreter } from "bun-php";
+
+const php = createInterpreter({
+  phpVersion: "8.3",
+  spawn: "refuse",
+  ini: { memory_limit: "1024M" },
+});
+
+await php.mount("/tmp/some-project", "/project");
+const { stdout, exitCode } = await php.cli([
+  "php",
+  "/tools/phpcs.phar",
+  "--report=json",
+  "/project",
+]);
+```
+
+| Option       | Default     | Meaning                                                                             |
+| ------------ | ----------- | ----------------------------------------------------------------------------------- |
+| `phpVersion` | `"8.5"`     | Which build to boot. Anything else must be installed by you — see below.            |
+| `loader`     | –           | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.             |
+| `ini`        | –           | `php.ini` entries, applied before the first call.                                    |
+| `spawn`      | –           | `"refuse"`, or your own handler. See the warning below.                              |
+| `mounts`     | –           | `{ host, at }` directories to mount up front.                                        |
+| `timeoutMs`  | –           | Deadline for `cli()`. Bounds *waiting*, not the work — see Limitations.             |
+
+Beyond `cli()`, an interpreter offers `mount()`, `ini()`, `writeFile()`,
+`mkdir()`, `php()` (the raw php-wasm instance) and `dispose()`.
+
+The same options are accepted by the plugin, so an imported `.php` file can be
+configured identically:
+
+```ts
+phpPlugin({ runtime: { phpVersion: "8.3", ini: { memory_limit: "512M" } } });
+```
+
+### Choosing a PHP version
+
+`phpVersion` defaults to `8.5`, the only build bun-php depends on. Every other
+version is an **optional peer dependency**, so you install the one you want:
+
+```bash
+bun add @php-wasm/node-8-3
+```
+
+Each build ships tens of megabytes of WebAssembly, which is why they are not all
+bundled. Asking for one you have not installed names it rather than failing with
+a bare module-resolution error:
+
+```
+PHP 8.1 needs @php-wasm/node-8-1, which is not installed.
+Run `bun add @php-wasm/node-8-1`, or pass `loader` to supply the build yourself.
+```
+
+Each build picks the JSPI or asyncify variant for itself. `loader` is the way
+past that when you need to pin one:
+
+```ts
+createInterpreter({
+  loader: () => import("@php-wasm/node-8-3/asyncify/php_8_3.js"),
+});
+```
+
+### Spawning
+
+PHP's `exec`, `shell_exec` and `popen` reach the host through a spawn handler.
+There is no default, and **leaving one uninstalled hangs the process**: a tool
+that probes for a terminal with `shell_exec('tty')` — PHP_CodeSniffer does —
+waits forever on a bridge that never answers.
+
+`spawn: "refuse"` answers every spawn with an immediate non-zero exit, which is
+what analysis tools want. Installing a *real* handler that shells out gives any
+PHP you run full host execution, so reach for it deliberately.
+
 ## Plugin options
 
 ```ts
@@ -273,6 +356,7 @@ Bun.build({
 | `filter`   | `/\.php$/`  | Which files to handle.                                                                                |
 | `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve.                               |
 | `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.     |
+| `runtime`  | –           | `PhpRuntimeOptions` for the interpreter behind the module — see [Driving PHP directly](#driving-php-directly). |
 
 Note that the `bun build` **CLI** cannot use plugins at all — use the
 `Bun.build()` JS API, or `[serve.static] plugins = ["bun-php"]` for the dev
@@ -317,6 +401,22 @@ await tick(); // 1, not 2
 Use `$eval` or module-level PHP if you need state within a single call, or keep
 state on the JavaScript side.
 
+**A running PHP request cannot be interrupted.** There is no way to cancel one
+from JavaScript: `PHP.exit()` mid-call returns without stopping anything, and
+`max_execution_time` is ignored by the wasm build — a script asking for a
+two-second limit was measured running for the full eight seconds it was told to
+burn. `timeoutMs` therefore rejects your promise and retires the interpreter,
+but **the PHP keeps running**. The only real bound is a process you can kill, so
+put anything that might run away in a `Worker` or a subprocess and terminate
+that.
+
+**Interpreters do not run in parallel.** The wasm work holds the thread, so two
+concurrent one-second calls on two separate interpreters take two seconds, not
+one. There is deliberately no pool API, because a second interpreter in the same
+process buys nothing. For real parallelism, give each interpreter its own
+`Worker` — which you want anyway, since a wasm abort is not catchable and takes
+the whole process with it.
+
 **Other things to know:**
 
 - **ESM only.** `.php` modules cannot be loaded with `require()`.
@@ -337,9 +437,10 @@ state on the JavaScript side.
   as a function name (an explicit exception in the keyword list), but
   php-parser — which powers the import pipeline — rejects it, so a file
   declaring one fails to import with a parse error.
-- **PHP 8.5 only.** The runtime import is isolated in `src/php-runtime.ts`, so
-  supporting other versions is a one-line change plus the matching
-  `@php-wasm/node-X-Y` dependency.
+- **Mount scoping is the isolation that works.** Only what you mount exists
+  inside the virtual filesystem, so an unmounted host path is simply not there.
+  Do not reach for `open_basedir` or `disable_functions` as a substitute — their
+  behaviour under php-wasm varies by build, and neither is load-bearing here.
 
 ## Development
 
