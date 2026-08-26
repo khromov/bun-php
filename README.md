@@ -1,6 +1,6 @@
 # bun-php
 
-Import `.php` files into Bun and call PHP functions as async JavaScript functions.
+Now you can finally run PHP files in Bun! Simply import `.php` files and bun-php converts them to async, typed JavaScript functions running under PHP 8.5!
 
 ```php
 <?php
@@ -17,7 +17,7 @@ import { greet } from "./hello.php";
 console.log(await greet("world")); // "Hello, world!"
 ```
 
-No PHP binary required — PHP 8.5 runs inside WebAssembly.
+No PHP binaries is required — PHP 8.5 runs inside WASM.
 
 ## Install
 
@@ -35,10 +35,6 @@ preload = ["bun-php/register"]
 [test]
 preload = ["bun-php/register"]
 ```
-
-Registration must go through `preload`. Calling `Bun.plugin()` from the file
-that imports the `.php` file is too late — module resolution runs before the
-plugin registers.
 
 ## Can I do the meme thing?
 
@@ -99,7 +95,7 @@ import { delete as deleteFile } from "./files.php";
 
 ## Inline PHP
 
-For a snippet that doesn't warrant a file, tag a template with `BunPHP`:
+For a snippet that doesn't warrant a PHP file, tag a template with `BunPHP`:
 
 ```ts
 import { BunPHP } from "bun-php";
@@ -112,7 +108,7 @@ await BunPHP`<?php return 40 + 2;`; // 42
 like an imported `.php` file or the PHP CLI. The promise resolves to a
 top-level `return`, or to `null` when there is none.
 
-Use `BunPHP.capture` to take the output as a value instead. It prints nothing:
+Use `BunPHP.capture` to buffer the output as a value instead. It prints nothing:
 
 ```ts
 await BunPHP.capture`<?php echo "Hello world";`; // "Hello world"
@@ -136,8 +132,7 @@ await BunPHP.capture`<?php echo "a"; ?><i>b</i>`; // "a<i>b</i>" — mode switch
 Because it's a plain runtime API, inline PHP needs no plugin registration and
 no `preload` entry.
 
-Interpolated values are converted to PHP **expressions**, never pasted in as
-source, so a value can never run as code:
+Interpolated values are converted to PHP **expressions**:
 
 ```ts
 const name = "Bun";
@@ -154,7 +149,7 @@ await BunPHP`<?php return "Hello ${name}";`; // literal text, not the value
 ```
 
 `BunPHP` and `BunPHP.capture` share one interpreter, and each snippet runs as
-its own PHP request, so nothing leaks between them. `BunPHP.dispose()` shuts it
+its own PHP "request", so nothing leaks between them. `BunPHP.dispose()` shuts it
 down.
 
 ## Types
@@ -169,7 +164,7 @@ export declare const GREETING: "Hello";
 ```
 
 TypeScript picks these up automatically for `import ... from "./hello.php"`, so
-you get autocomplete and type errors. Commit the sidecars or add `*.php.d.ts`
+you get autocomplete and type errors. Commit these generated files or don't - add `*.php.d.ts`
 to `.gitignore` — either works.
 
 | PHP              | TypeScript                                  |
@@ -199,7 +194,7 @@ Not generating sidecars? Reference the fallback declaration, which types every
 ## Multi-file projects and Composer
 
 bun-php mounts the project directory into the WebAssembly filesystem, so
-`require` of a sibling file, `__DIR__`, and Composer's autoloader all work:
+`require` of a sibling file, `__DIR__`, and Composer's autoloader works as expected:
 
 ```php
 <?php
@@ -226,12 +221,11 @@ call.
 
 The mount is a live view of the host filesystem — files written after the
 interpreter booted are visible, and PHP can write back to disk. See
-[`demos/`](demos/) for real packages (CommonMark, Carbon, ramsey/uuid,
-php-jwt, league/csv) exercised end to end.
+[`demos/`](demos/) for real examples.
 
 ## Module API
 
-The default export carries the interpreter controls:
+The default export exposes methods for controlling the interpreter directly:
 
 ```ts
 import php from "./hello.php";
@@ -307,18 +301,20 @@ It fixes three things the in-process interpreter can't:
 
 - **Memory returns to baseline.** The wasm heap retains hundreds of MB across
   boot/dispose cycles in-process; an exiting child hands it back to the OS.
-  Across ten calls the parent's RSS moves ~1 MB versus 300–800 MB in-process.
 - **`timeoutMs` actually cancels.** In-process a timeout only abandons the
   request; here it SIGKILLs the child and the work stops.
 - **Calls run in parallel.** Two concurrent one-second calls take 1.04× the
   time of one, versus 1.96× in-process.
 
-`mount`/`writeFile`/`mkdir`/`ini` are recorded and replayed inside each child,
-so it behaves identically. Everything must survive JSON, though: `loader` and a
-function-valued `spawn` are rejected at construction (`spawn: "refuse"` is
-fine), and `php()` has no instance to return. Each call also pays a child spawn
-plus a fresh wasm boot (a few hundred milliseconds) — noise for a tool run,
-wrong for a hot loop of small calls.
+Each child is a fresh process that boots its own wasm, so the setup you did on
+the parent isn't there to start with. bun-php records your `mount`, `writeFile`,
+`mkdir` and `ini` calls and re-runs them in every child before the command, so
+the child sees the same files and config an in-process interpreter would. That
+setup has to survive JSON, though: `loader` and a function-valued `spawn` are
+rejected at construction (`spawn: "refuse"` is fine), and `php()` has no
+in-process instance to return. Each call also pays a child spawn plus a fresh
+wasm boot (a few hundred milliseconds) — noise for a tool run, wrong for a hot
+loop of small calls.
 
 The plugin accepts the same options, so an imported `.php` file can be
 configured identically:
@@ -356,7 +352,7 @@ createInterpreter({
 
 PHP's `exec`, `shell_exec` and `popen` reach the host through a spawn handler.
 There is no default, and **leaving one uninstalled hangs the process**: a tool
-that probes for a terminal with `shell_exec('tty')` — PHP_CodeSniffer does —
+that probes for a terminal with `shell_exec('tty')` — for example PHP_CodeSniffer does —
 waits forever for an answer that never comes.
 
 `spawn: "refuse"` answers every spawn with an immediate non-zero exit, which is
@@ -448,7 +444,7 @@ an uncatchable wasm abort takes only its own child.
   `gd`, `zip`, `curl`, `sqlite3` and friends. **`intl` is absent**, so packages
   requiring `ext-intl` won't load.
 - **`function readonly()` doesn't parse.** PHP 8.5 allows `readonly` as a
-  function name, but php-parser rejects it, so a file declaring one fails to
+  function name, but php-parser (which this project uses) rejects it, so a file declaring one fails to
   import.
 - **Only what you mount exists** inside the virtual filesystem — an unmounted
   host path simply isn't there. Don't reach for `open_basedir` or
