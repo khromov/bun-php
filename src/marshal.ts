@@ -97,9 +97,7 @@ export function buildCallScript(
   // Composer's autoloader has to be registered again for every call, because
   // php-wasm resets request-scoped state (including declared functions and
   // registered autoloaders) between runs.
-  const prelude = autoloadPath
-    ? `    require_once ${phpVar(autoloadPath as never)};\n`
-    : "";
+  const prelude = autoloadPath ? `    require_once ${phpVar(autoloadPath as never)};\n` : "";
 
   return `<?php
 ini_set('html_errors', '0');

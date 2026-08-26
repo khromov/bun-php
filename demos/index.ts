@@ -49,7 +49,16 @@ try {
 heading("CSV", "league/csv");
 const records = await parseCsv("name,qty\nwidget,3\ngadget,12");
 console.log("parsed:", records);
-console.log("built:\n" + (await buildCsv(["name", "qty"], [["widget", 3], ["gadget", 12]])));
+console.log(
+  "built:\n" +
+    (await buildCsv(
+      ["name", "qty"],
+      [
+        ["widget", 3],
+        ["gadget", 12],
+      ],
+    )),
+);
 
 heading("Images", "ext-gd");
 // The project directory is mounted, so PHP reads and writes real files here.
@@ -59,12 +68,19 @@ type Info = { width: number; height: number; mime: string; bytes: number };
 type Resized = { from: Info; to: Info; bytes: number };
 
 const original = (await imageInfo(source)) as Info;
-console.log(`source:    ${original.width}x${original.height} ${original.mime} ${(original.bytes / 1024 / 1024).toFixed(1)}MB`);
+console.log(
+  `source:    ${original.width}x${original.height} ${original.mime} ${(original.bytes / 1024 / 1024).toFixed(1)}MB`,
+);
 
 const resized = (await thumbnail(source, `${images}/mochi-1-thumbnail.jpg`, 320)) as Resized;
-console.log(`thumbnail: ${resized.to.width}x${resized.to.height} jpeg ${(resized.bytes / 1024).toFixed(1)}KB -> images/mochi-1-thumbnail.jpg`);
+console.log(
+  `thumbnail: ${resized.to.width}x${resized.to.height} jpeg ${(resized.bytes / 1024).toFixed(1)}KB -> images/mochi-1-thumbnail.jpg`,
+);
 
-const webp = (await toWebp(`${images}/mochi-1-thumbnail.jpg`, `${images}/mochi-1-thumbnail.webp`)) as { bytes: number };
+const webp = (await toWebp(
+  `${images}/mochi-1-thumbnail.jpg`,
+  `${images}/mochi-1-thumbnail.webp`,
+)) as { bytes: number };
 console.log(`converted: ${webp.bytes} bytes webp -> images/mochi-1-thumbnail.webp`);
 
 heading("First-party classes", "Demo\\Inventory via PSR-4");

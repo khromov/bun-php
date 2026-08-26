@@ -1,11 +1,6 @@
 import type { PHP } from "@php-wasm/universal";
 import { PhpFatalError } from "./errors";
-import {
-  buildCallScript,
-  EnvelopeSplitter,
-  encodeArgs,
-  unwrapEnvelope,
-} from "./marshal";
+import { buildCallScript, EnvelopeSplitter, encodeArgs, unwrapEnvelope } from "./marshal";
 import { bootPhp, nodeFsMountHandler } from "./php-runtime";
 import { applyRuntimeOptions, type PhpRuntimeOptions } from "./interpreter";
 import { existsSync } from "node:fs";
@@ -62,7 +57,6 @@ class PhpInstance {
   #php: PHP | null = null;
   #booting: Promise<PHP> | null = null;
   #captured = "";
-  #mounted = false;
   /** Calls currently executing, so lifecycle methods can wait them out. */
   readonly #inflight = new Set<Promise<unknown>>();
   /** Serialises reset/dispose so they cannot interleave with each other. */
@@ -118,18 +112,13 @@ class PhpInstance {
     if (this.root && existsSync(this.root)) {
       php.mkdir(this.root);
       await php.mount(this.root, nodeFsMountHandler(this.root));
-      this.#mounted = true;
       return;
     }
     php.mkdir(dirname(this.id));
     php.writeFile(this.id, this.source);
   }
 
-  async run(
-    expression: string,
-    label: string,
-    sink?: (text: string) => void,
-  ): Promise<unknown> {
+  async run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
     const task = this.#run(expression, label, sink);
     this.#inflight.add(task);
     const settle = () => this.#inflight.delete(task);
@@ -137,11 +126,7 @@ class PhpInstance {
     return task;
   }
 
-  async #run(
-    expression: string,
-    label: string,
-    sink?: (text: string) => void,
-  ): Promise<unknown> {
+  async #run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
     const php = await this.php();
     const script = buildCallScript(this.id, expression, this.autoload);
 
@@ -174,19 +159,12 @@ class PhpInstance {
     // now; everything else has already been emitted above.
     if (envelope?.out) emit(envelope.out);
 
-    const [exitCode, stderr] = await Promise.all([
-      response.exitCode,
-      response.stderrText,
-    ]);
+    const [exitCode, stderr] = await Promise.all([response.exitCode, response.stderrText]);
 
     if (!envelope) {
-      const detail = [stderr.trim(), splitter.tail.trim()]
-        .filter(Boolean)
-        .join("\n");
+      const detail = [stderr.trim(), splitter.tail.trim()].filter(Boolean).join("\n");
       throw new PhpFatalError(
-        `${label}: PHP produced no result (exit code ${exitCode})${
-          detail ? `\n${detail}` : ""
-        }`,
+        `${label}: PHP produced no result (exit code ${exitCode})${detail ? `\n${detail}` : ""}`,
         this.id,
         0,
       );
@@ -223,12 +201,11 @@ class PhpInstance {
     const php = this.#php ?? (await this.#booting!.catch(() => null));
     // Let in-flight calls finish before the runtime under them is torn down.
     while (this.#inflight.size > 0) {
-      await Promise.allSettled([...this.#inflight]);
+      await Promise.allSettled(this.#inflight);
     }
     if (php && this.#php === php) {
       this.#php = null;
       this.#booting = null;
-      this.#mounted = false;
       php.exit();
     }
     await this.php();
@@ -253,10 +230,9 @@ class PhpInstance {
     this.#booting = null;
     const php = this.#php ?? (booting ? await booting.catch(() => null) : null);
     while (this.#inflight.size > 0) {
-      await Promise.allSettled([...this.#inflight]);
+      await Promise.allSettled(this.#inflight);
     }
     this.#php = null;
-    this.#mounted = false;
     php?.exit();
   }
 }
@@ -314,10 +290,7 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
     async $dispose(): Promise<void> {
       await live.dispose();
     },
-    async $eval(
-      code: string,
-      onOutput?: (text: string) => void,
-    ): Promise<any> {
+    async $eval(code: string, onOutput?: (text: string) => void): Promise<any> {
       // The newline keeps a trailing `//` or `#` comment in `code` from
       // swallowing the closing brace.
       return live.run(`(static function () { ${code}\n})()`, "$eval", onOutput);

@@ -107,9 +107,7 @@ describe("generated module", () => {
 describe("generated .d.ts", () => {
   test("wraps return types in Promise", () => {
     const { dts } = build(`function greet(string $n): string {}`);
-    expect(dts).toContain(
-      "export declare function greet(n: string): Promise<string>;",
-    );
+    expect(dts).toContain("export declare function greet(n: string): Promise<string>;");
   });
 
   test("marks defaulted parameters optional", () => {
@@ -177,12 +175,54 @@ describe("generated .d.ts", () => {
  * in codegen.ts by the assertions below rather than by exporting the set.
  */
 const STRICT_MODE_INVALID = [
-  "arguments", "await", "break", "case", "catch", "class", "const", "continue",
-  "debugger", "default", "delete", "do", "else", "enum", "eval", "export",
-  "extends", "false", "finally", "for", "function", "if", "implements", "import",
-  "in", "instanceof", "interface", "let", "new", "null", "package", "private",
-  "protected", "public", "return", "static", "super", "switch", "this", "throw",
-  "true", "try", "typeof", "var", "void", "while", "with", "yield",
+  "arguments",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "eval",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "implements",
+  "import",
+  "in",
+  "instanceof",
+  "interface",
+  "let",
+  "new",
+  "null",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "return",
+  "static",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
 ];
 
 describe("reserved word coverage", () => {

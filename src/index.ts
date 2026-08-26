@@ -6,12 +6,7 @@ export { parsePhp } from "./parse";
 export { resolveProject, type PhpProject } from "./project";
 export { generateModule } from "./codegen";
 export { generateDts } from "./dts";
-export {
-  PhpError,
-  PhpFatalError,
-  PhpParseError,
-  PhpTimeoutError,
-} from "./errors";
+export { PhpError, PhpFatalError, PhpParseError, PhpTimeoutError } from "./errors";
 export {
   createInterpreter,
   PhpInterpreter,

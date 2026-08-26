@@ -25,14 +25,14 @@ function banner(summary: Summary): string {
 }
 
 async function page(): Promise<Response> {
-  const [html, summary] = await Promise.all([
-    phpInfoHtml(),
-    runtimeSummary() as Promise<Summary>,
-  ]);
+  const [html, summary] = await Promise.all([phpInfoHtml(), runtimeSummary() as Promise<Summary>]);
 
-  return new Response(html.replace(/<body[^>]*>/i, (tag) => tag + banner(summary)), {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  return new Response(
+    html.replace(/<body[^>]*>/i, (tag: string) => tag + banner(summary)),
+    {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    },
+  );
 }
 
 let server: ReturnType<typeof Bun.serve>;

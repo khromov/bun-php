@@ -4,8 +4,7 @@ import type { PhpModuleMeta, StdoutMode } from "../src/types";
 
 const meta: PhpModuleMeta = { functions: [], constants: [], skipped: [] };
 
-const cache = () =>
-  (globalThis as Record<string, any>).__bunPhpInstances as Map<string, unknown>;
+const cache = () => (globalThis as Record<string, any>).__bunPhpInstances as Map<string, unknown>;
 
 const moduleWith = (id: string, stdout: StdoutMode) =>
   createPhpModule({ id, source: "<?php\n", functions: {}, meta, stdout });
