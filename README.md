@@ -271,15 +271,15 @@ const { stdout, exitCode } = await php.cli([
 ]);
 ```
 
-| Option       | Default | Meaning                                                                                                   |
-| ------------ | ------- | --------------------------------------------------------------------------------------------------------- |
-| `phpVersion` | `"8.5"` | Which build to boot. Any other version must be installed by you — see below.                              |
-| `loader`     | –       | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.                                    |
-| `ini`        | –       | `php.ini` entries, applied before the first call.                                                         |
-| `spawn`      | –       | `"refuse"`, or your own handler. See the warning below.                                                   |
-| `mounts`     | –       | `{ host, at }` directories to mount up front.                                                             |
+| Option       | Default | Meaning                                                                                                             |
+| ------------ | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| `phpVersion` | `"8.5"` | Which build to boot. Any other version must be installed by you — see below.                                        |
+| `loader`     | –       | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.                                             |
+| `ini`        | –       | `php.ini` entries, applied before the first call.                                                                   |
+| `spawn`      | –       | `"refuse"`, or your own handler. See the warning below.                                                             |
+| `mounts`     | –       | `{ host, at }` directories to mount up front.                                                                       |
 | `timeoutMs`  | –       | Deadline for `cli()`. In-process it bounds waiting, not the work (see Limitations); under isolation it's a SIGKILL. |
-| `isolation`  | –       | `"process"` runs each `cli()` in a child process that exits afterwards.                                    |
+| `isolation`  | –       | `"process"` runs each `cli()` in a child process that exits afterwards.                                             |
 
 Beyond `cli()`, an interpreter offers `mount()`, `ini()`, `writeFile()`,
 `mkdir()`, `php()` (the raw php-wasm instance) and `dispose()`.
