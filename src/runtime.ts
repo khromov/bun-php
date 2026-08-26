@@ -249,6 +249,14 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
   const root = options.root ?? null;
   const autoload = options.autoload ?? null;
   const runtime = options.runtime ?? {};
+  // The imported-module path runs many small calls against one live instance,
+  // which is the opposite of a child that exits per call; a mode that cannot
+  // apply must fail loudly rather than quietly run in-process.
+  if (runtime.isolation) {
+    throw new TypeError(
+      "isolation is not supported for imported .php modules; use createInterpreter",
+    );
+  }
 
   const cache = instanceCache();
   let instance = cache.get(id);
