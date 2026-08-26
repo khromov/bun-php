@@ -73,9 +73,7 @@ describe("sidecar .d.ts", () => {
     await runOnLoad(phpPlugin(), file);
 
     const sidecar = await Bun.file(`${file}.d.ts`).text();
-    expect(sidecar).toContain(
-      "export declare function greet(name: string): Promise<string>;",
-    );
+    expect(sidecar).toContain("export declare function greet(name: string): Promise<string>;");
     expect(sidecar).toContain(`export declare const NAME: "sample";`);
   });
 

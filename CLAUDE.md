@@ -18,11 +18,22 @@ bun test -t "variadic"            # one test by name
 bun run example                   # example/index.ts against example/hello.php
 bun run demos                     # demos/index.ts against real Composer packages
 bun run typecheck                 # bunx tsc -p tsconfig.json (noEmit)
+bun run lint                      # oxlint (correctness rules)
+bun run fmt                       # oxfmt, write in place
+bun run fmt:check                 # oxfmt --check (what CI runs)
 
 composer install --working-dir=demos   # required before demos/ runs or its tests
+bun run demos:vendor:pack         # rebuild demos/vendor.zip (needs Composer; commit the result)
+bun run demos:vendor:unpack       # unzip demos/vendor.zip into demos/vendor (what CI runs)
 ```
 
-There is no lint step and no build step.
+There is a lint step (oxlint + oxfmt) but no build step.
+
+CI (`.github/workflows/test.yml`) runs on PRs and `main`: typecheck, lint, `fmt:check`, then unpacks
+`demos/vendor.zip` and runs the tests on ubuntu + macos. The demo Composer deps are committed as
+`demos/vendor.zip` (built by `demos:vendor:pack`) so CI needs neither Composer nor a system PHP —
+regenerate and recommit that zip whenever `demos/composer.lock` changes. Releases go out via
+`.github/workflows/release.yml`: release-please cuts the tag, then npm publishes over OIDC (no token).
 
 ## Architecture
 
@@ -40,21 +51,21 @@ The generated module imports `createPhpModule` from `runtime.ts` and exports one
 function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, decode the result) →
 `php-runtime.ts` (the interpreter).
 
-| File | Responsibility |
-| --- | --- |
-| `src/plugin.ts` | `onLoad` hook, option defaults, sidecar writing |
-| `src/register.ts` | Side-effecting `plugin(phpPlugin())` for `preload` |
-| `src/parse.ts` | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes) |
-| `src/php-types.ts` | PHP type hints and docblock types → TypeScript type expressions |
-| `src/codegen.ts` | Emits the JS module |
-| `src/dts.ts` | Emits the `.d.ts` sidecar |
-| `src/runtime.ts` | Interpreter cache, lifecycle (`$ready`/`$reset`/`$dispose`), stdout modes |
-| `src/inline.ts` | The `` BunPHP`...` `` tagged template for file-less snippets |
-| `src/marshal.ts` | The JS ⇄ PHP call protocol |
-| `src/project.ts` | Walks up from a `.php` file to find its Composer root and autoloader |
+| File                 | Responsibility                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| `src/plugin.ts`      | `onLoad` hook, option defaults, sidecar writing                                               |
+| `src/register.ts`    | Side-effecting `plugin(phpPlugin())` for `preload`                                            |
+| `src/parse.ts`       | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes)                           |
+| `src/php-types.ts`   | PHP type hints and docblock types → TypeScript type expressions                               |
+| `src/codegen.ts`     | Emits the JS module                                                                           |
+| `src/dts.ts`         | Emits the `.d.ts` sidecar                                                                     |
+| `src/runtime.ts`     | Interpreter cache, lifecycle (`$ready`/`$reset`/`$dispose`), stdout modes                     |
+| `src/inline.ts`      | The `` BunPHP`...` `` tagged template for file-less snippets                                  |
+| `src/marshal.ts`     | The JS ⇄ PHP call protocol                                                                    |
+| `src/project.ts`     | Walks up from a `.php` file to find its Composer root and autoloader                          |
 | `src/php-runtime.ts` | The only module importing `@php-wasm/*`, the version→build map, plus the NODEFS mount handler |
-| `src/interpreter.ts` | `createInterpreter` — a configured interpreter with no `.php` file behind it |
-| `types/php.d.ts` | Fallback `*.php` module declaration for users not generating sidecars |
+| `src/interpreter.ts` | `createInterpreter` — a configured interpreter with no `.php` file behind it                  |
+| `types/php.d.ts`     | Fallback `*.php` module declaration for users not generating sidecars                         |
 
 ## Things that will bite you
 
@@ -72,7 +83,7 @@ mtime and retriggers the watcher in a loop.
 
 **The call protocol is a JSON envelope between a sentinel pair**, not plain stdout parsing. PHP flushes open
 output buffers to stdout on a fatal error, so the script's own `echo` output can land ahead of the envelope,
-and user shutdown functions or destructors can print after it; the envelope is the JSON between the *last*
+and user shutdown functions or destructors can print after it; the envelope is the JSON between the _last_
 sentinel pair, and everything around it is script output. Any change to `buildCallScript` needs the matching
 change in `EnvelopeSplitter`/`unwrapEnvelope`.
 
@@ -82,8 +93,8 @@ change in `EnvelopeSplitter`/`unwrapEnvelope`.
 running. `EnvelopeSplitter` in `marshal.ts` does the classifying, which is harder than it is over a complete
 string: a sentinel can straddle a chunk boundary (so a tail that could still grow into one is held back), a
 sentinel pair whose contents are not JSON was never an envelope (so it is put back on the wire verbatim), and
-*last pair wins* means output after an envelope is held until the stream ends, in case a later one supersedes
-it. `decodeOutput` is the same splitter fed a whole string, so the two cannot drift. Only buffers the *user's*
+_last pair wins_ means output after an envelope is held until the stream ends, in case a later one supersedes
+it. `decodeOutput` is the same splitter fed a whole string, so the two cannot drift. Only buffers the _user's_
 code opened and left open still arrive in the envelope's `out` field.
 
 **Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module each time because
@@ -93,14 +104,16 @@ variables and globals do not persist across calls — a documented limitation, a
 **The project directory is mounted, not copied.** `runtime.ts` mounts the resolved root over NODEFS, which
 is a live view of the host FS — that is what makes sibling `require`, `__DIR__` and Composer work. The
 inlined-source `writeFile` path is only a fallback for when the directory is not on disk (a bundle running
-elsewhere). Mounts survive `hotSwapPHPRuntime`, so `$reset()` must *not* re-mount — hence the `#mounted` flag.
+elsewhere). `$reset()`/`$dispose()` tear the runtime down with `php.exit()` rather than `hotSwapPHPRuntime`
+(a hot swap would copy the old MEMFS across), so the next call re-boots and `#populate` re-mounts the root
+from scratch — there is no mount to preserve.
 
 **Composer's autoloader is re-required on every call** (`buildCallScript`), because request state resets. This
 is why `demos/` works at all, and why warm-call cost tracks how much the library does per call.
 
 **The inline tag prints; `BunPHP.capture` returns.** `BunPHP` matches the plugin's `stdout: "inherit"`
 default — `echo` goes to the terminal as PHP writes it, and the promise resolves to the top-level `return`
-(or `null`) — while `BunPHP.capture` resolves to the output and prints nothing. Both share *one* interpreter,
+(or `null`) — while `BunPHP.capture` resolves to the output and prints nothing. Both share _one_ interpreter,
 created `"inherit"`: `capture` passes `$eval` an output sink, which overrides the instance's stdout mode for
 that call alone. A sink rather than a shared buffer is what keeps a snippet that throws part-way through
 printing from leaving its output behind for the next snippet — and it is the reason `capture` did not have to
@@ -115,14 +128,14 @@ re-enters PHP mode when a snippet ends in markup, or the wrapper's closing brace
 for a PHP name; `codegen.ts`, `dts.ts` and the uniqueness guard in `parse.ts` all call it so they cannot drift.
 `parse.ts` also reserves the generated module's own identifiers (`__mod`, `createPhpModule`, `_default`,
 `default`), skipping any PHP name that would collide — `define()` accepts names a `const` declaration cannot.
-`RESERVED` in `codegen.ts` is *ECMAScript's* invalid-binding list (reserved words + strict-mode additions +
+`RESERVED` in `codegen.ts` is _ECMAScript's_ invalid-binding list (reserved words + strict-mode additions +
 `arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
 transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,
 so `Bun.Transpiler` alone is not proof a generated module loads — `test/e2e.test.ts` imports a `yield`
 constant through the real loader for exactly that reason.
 
 **Type-mapping changes** go in `php-types.ts` (`BUILTIN_TS` for declarations, `convertDocPart` for docblocks).
-The precedence rule lives in `chooseType` in `parse.ts`: a real type declaration wins, *except* that bare
+The precedence rule lives in `chooseType` in `parse.ts`: a real type declaration wins, _except_ that bare
 `array` and `mixed` defer to a `@param`/`@return` docblock tag.
 
 **PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
@@ -138,14 +151,14 @@ fails to load.
 second `cli()` on the same instance returns exit code **-1 with no output and no error at all** — a silent
 failure. `PhpInterpreter` therefore boots a replacement between commands and replays the staged filesystem
 work (`#staged`) onto it, which is why `mount`/`writeFile`/`mkdir`/`ini` record a closure rather than just
-acting. `#stage` awaits `php()` *before* recording, because `#boot` replays what is already staged and
+acting. `#stage` awaits `php()` _before_ recording, because `#boot` replays what is already staged and
 recording first would run the new step twice on the very first call.
 
 **Neither timeouts nor parallelism work the way you would assume**, both measured:
 
 - A running request cannot be interrupted. `PHP.exit()` mid-call returns without stopping it (a busy loop then
   ran to completion), and `max_execution_time` is ignored — a 2s limit let an 8s loop finish. So `timeoutMs`
-  bounds *waiting* only: it rejects and retires the interpreter while the PHP keeps burning CPU. Say so
+  bounds _waiting_ only: it rejects and retires the interpreter while the PHP keeps burning CPU. Say so
   wherever it is documented; a timeout that implies cancellation is worse than none.
 - Interpreters do not overlap. Two concurrent 1s calls on two instances take ~2s (ratio 1.96), because the
   wasm holds the thread. That is why there is no pool API — a second interpreter in-process buys nothing, and

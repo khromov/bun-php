@@ -1,0 +1,71 @@
+name: test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs for the same PR/branch so a new push doesn't leave the
+# old run churning (or hanging) on stale code.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Check formatting
+        run: bun run fmt:check
+
+      # The demo Composer deps ship as a committed zip (demos/vendor.zip, built
+      # by `bun run demos:vendor:pack`), so CI needs neither Composer nor a
+      # system PHP — just unpack it before the demos suite runs.
+      - name: Unpack demo vendor
+        run: bun run demos:vendor:unpack
+
+      - name: Run tests
+        run: bun run test
+
+  # Single job the branch protection rule can require, regardless of how the
+  # matrix grows.
+  test:
+    if: always()
+    needs: test-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all matrix jobs passed
+        if: needs.test-matrix.result != 'success'
+        run: exit 1

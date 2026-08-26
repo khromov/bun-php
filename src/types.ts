@@ -1,13 +1,7 @@
 import type { PHP } from "@php-wasm/universal";
 
 /** Any value that can cross the JS <-> PHP boundary (JSON-encodable). */
-export type PhpValue =
-  | string
-  | number
-  | boolean
-  | null
-  | PhpValue[]
-  | { [key: string]: PhpValue };
+export type PhpValue = string | number | boolean | null | PhpValue[] | { [key: string]: PhpValue };
 
 /** A PHP `array`: a list when keys are sequential, an object otherwise. */
 export type PhpArray = PhpValue[] | { [key: string]: PhpValue };

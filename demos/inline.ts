@@ -3,8 +3,7 @@ import { BunPHP } from "bun-php";
 await BunPHP`<?php echo "Hello from PHP!"; ?>`;
 
 const started = performance.now();
-const at = (): string =>
-  `${((performance.now() - started) / 1000).toFixed(1)}s`;
+const at = (): string => `${((performance.now() - started) / 1000).toFixed(1)}s`;
 
 console.log(`\n[js  ${at()}] one snippet, three logs a second apart:`);
 

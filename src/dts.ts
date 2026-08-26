@@ -102,9 +102,7 @@ function renderParams(fn: PhpFunctionMeta): string {
     const name = isBindableIdentifier(param.name) ? param.name : `_${param.name}`;
 
     if (param.variadic) {
-      const element = param.tsType.includes(" | ")
-        ? `(${param.tsType})`
-        : param.tsType;
+      const element = param.tsType.includes(" | ") ? `(${param.tsType})` : param.tsType;
       parts.push(`...${name}: ${element}[]`);
       continue;
     }

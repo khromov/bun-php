@@ -56,15 +56,11 @@ describe("league/commonmark", () => {
 
 describe("nesbot/carbon", () => {
   test("describes a difference in words", async () => {
-    expect(await humanDiff("2026-08-01T12:00:00Z", "2026-08-25T12:00:00Z")).toBe(
-      "3 weeks before",
-    );
+    expect(await humanDiff("2026-08-01T12:00:00Z", "2026-08-25T12:00:00Z")).toBe("3 weeks before");
   });
 
   test("converts between timezones", async () => {
-    expect(await formatIn("2026-08-25T09:30:00Z", "Asia/Tokyo")).toBe(
-      "Tue, 25 Aug 2026 18:30 JST",
-    );
+    expect(await formatIn("2026-08-25T09:30:00Z", "Asia/Tokyo")).toBe("Tue, 25 Aug 2026 18:30 JST");
   });
 
   test("skips weekends when adding weekdays", async () => {
@@ -124,9 +120,7 @@ describe("league/csv", () => {
   });
 
   test("handles quoted fields containing commas", async () => {
-    expect(await parseCsv('name,note\nwidget,"a, b"')).toEqual([
-      { name: "widget", note: "a, b" },
-    ]);
+    expect(await parseCsv('name,note\nwidget,"a, b"')).toEqual([{ name: "widget", note: "a, b" }]);
   });
 
   test("builds CSV text", async () => {
@@ -145,10 +139,7 @@ describe("ext-gd", () => {
   type Resized = { from: Info; to: Info; bytes: number };
 
   afterAll(async () => {
-    await Promise.all([
-      rm(jpegOut, { force: true }),
-      rm(webpOut, { force: true }),
-    ]);
+    await Promise.all([rm(jpegOut, { force: true }), rm(webpOut, { force: true })]);
   });
 
   test("reads the source image through the mounted directory", async () => {
@@ -244,9 +235,7 @@ describe("first-party PSR-4 classes", () => {
 
   test("first-party code can use vendor packages too", async () => {
     // Demo\Inventory derives its ids with ramsey/uuid.
-    const result = (await priceBasket([
-      { name: "widget", qty: 1, price: 1 },
-    ])) as Basket;
+    const result = (await priceBasket([{ name: "widget", qty: 1, price: 1 }])) as Basket;
     expect(result.items[0]!.id).toBe(await stableId("widget"));
   });
 });

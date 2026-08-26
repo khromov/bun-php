@@ -192,10 +192,7 @@ export interface BunPHPTag {
  * Use `BunPHP.capture` to take the output as a value instead.
  */
 export const BunPHP: BunPHPTag = Object.assign(
-  function BunPHP(
-    strings: TemplateStringsArray,
-    ...values: unknown[]
-  ): Promise<any> {
+  function BunPHP(strings: TemplateStringsArray, ...values: unknown[]): Promise<any> {
     return evaluate(strings, values, false, "BunPHP");
   },
   {
@@ -209,10 +206,7 @@ export const BunPHP: BunPHPTag = Object.assign(
      *     await BunPHP.capture`<?php echo "Hello world";`;   // "Hello world"
      *     await BunPHP.capture`<?php return 40 + 2;`;        // 42
      */
-    capture(
-      strings: TemplateStringsArray,
-      ...values: unknown[]
-    ): Promise<any> {
+    capture(strings: TemplateStringsArray, ...values: unknown[]): Promise<any> {
       return evaluate(strings, values, true, "BunPHP.capture");
     },
     async dispose(): Promise<void> {

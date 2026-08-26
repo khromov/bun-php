@@ -1,16 +1,21 @@
 {
   "name": "bun-php",
   "version": "0.1.0",
-  "type": "module",
   "description": "Import .php files into Bun and call PHP functions as async JavaScript functions.",
   "keywords": [
     "bun",
     "bun-plugin",
     "php",
-    "wasm",
-    "php-wasm"
+    "php-wasm",
+    "wasm"
   ],
   "license": "MIT",
+  "files": [
+    "src",
+    "types",
+    "README.md"
+  ],
+  "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./register": "./src/register.ts",
@@ -18,16 +23,16 @@
     "./interpreter": "./src/interpreter.ts",
     "./types": "./types/php.d.ts"
   },
-  "files": [
-    "src",
-    "types",
-    "README.md"
-  ],
   "scripts": {
     "test": "bun test",
     "example": "bun run example/index.ts",
     "typecheck": "bunx --package typescript@5.9.2 tsc -p tsconfig.json",
+    "lint": "oxlint",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "demos": "bun run demos/index.ts",
+    "demos:vendor:pack": "composer install --working-dir=demos --no-interaction && cd demos && rm -f vendor.zip && zip -qr vendor.zip vendor",
+    "demos:vendor:unpack": "cd demos && unzip -oq vendor.zip",
     "inline": "bun run demos/inline.ts",
     "phpinfo": "bun run demos/phpinfo.ts"
   },
@@ -39,7 +44,9 @@
   },
   "devDependencies": {
     "@php-wasm/node-8-3": "^3.1.51",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0"
   },
   "peerDependencies": {
     "@php-wasm/node-8-0": "^3.1.51",
@@ -50,13 +57,26 @@
     "typescript": ">=5.0.0"
   },
   "peerDependenciesMeta": {
-    "@php-wasm/node-8-0": { "optional": true },
-    "@php-wasm/node-8-1": { "optional": true },
-    "@php-wasm/node-8-2": { "optional": true },
-    "@php-wasm/node-8-3": { "optional": true },
-    "@php-wasm/node-8-4": { "optional": true },
+    "@php-wasm/node-8-0": {
+      "optional": true
+    },
+    "@php-wasm/node-8-1": {
+      "optional": true
+    },
+    "@php-wasm/node-8-2": {
+      "optional": true
+    },
+    "@php-wasm/node-8-3": {
+      "optional": true
+    },
+    "@php-wasm/node-8-4": {
+      "optional": true
+    },
     "typescript": {
       "optional": true
     }
+  },
+  "engines": {
+    "bun": ">=1.4.0"
   }
 }

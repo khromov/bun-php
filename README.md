@@ -279,14 +279,14 @@ const { stdout, exitCode } = await php.cli([
 ]);
 ```
 
-| Option       | Default     | Meaning                                                                             |
-| ------------ | ----------- | ----------------------------------------------------------------------------------- |
-| `phpVersion` | `"8.5"`     | Which build to boot. Anything else must be installed by you — see below.            |
-| `loader`     | –           | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.             |
-| `ini`        | –           | `php.ini` entries, applied before the first call.                                    |
-| `spawn`      | –           | `"refuse"`, or your own handler. See the warning below.                              |
-| `mounts`     | –           | `{ host, at }` directories to mount up front.                                        |
-| `timeoutMs`  | –           | Deadline for `cli()`. Bounds *waiting*, not the work — see Limitations.             |
+| Option       | Default | Meaning                                                                  |
+| ------------ | ------- | ------------------------------------------------------------------------ |
+| `phpVersion` | `"8.5"` | Which build to boot. Anything else must be installed by you — see below. |
+| `loader`     | –       | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.  |
+| `ini`        | –       | `php.ini` entries, applied before the first call.                        |
+| `spawn`      | –       | `"refuse"`, or your own handler. See the warning below.                  |
+| `mounts`     | –       | `{ host, at }` directories to mount up front.                            |
+| `timeoutMs`  | –       | Deadline for `cli()`. Bounds _waiting_, not the work — see Limitations.  |
 
 Beyond `cli()`, an interpreter offers `mount()`, `ini()`, `writeFile()`,
 `mkdir()`, `php()` (the raw php-wasm instance) and `dispose()`.
@@ -333,7 +333,7 @@ that probes for a terminal with `shell_exec('tty')` — PHP_CodeSniffer does —
 waits forever on a bridge that never answers.
 
 `spawn: "refuse"` answers every spawn with an immediate non-zero exit, which is
-what analysis tools want. Installing a *real* handler that shells out gives any
+what analysis tools want. Installing a _real_ handler that shells out gives any
 PHP you run full host execution, so reach for it deliberately.
 
 ## Plugin options
@@ -349,13 +349,13 @@ Bun.build({
 });
 ```
 
-| Option     | Default     | Meaning                                                                                               |
-| ---------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `dts`      | `"auto"`    | Write sidecar types. `"auto"` writes unless producing a bundle.                                       |
-| `stdout`   | `"inherit"` | Where PHP's `echo` output goes: `"inherit"`, `"capture"` (drain with `php.$output()`), or `"ignore"`. |
-| `filter`   | `/\.php$/`  | Which files to handle.                                                                                |
-| `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve.                               |
-| `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.     |
+| Option     | Default     | Meaning                                                                                                        |
+| ---------- | ----------- | -------------------------------------------------------------------------------------------------------------- |
+| `dts`      | `"auto"`    | Write sidecar types. `"auto"` writes unless producing a bundle.                                                |
+| `stdout`   | `"inherit"` | Where PHP's `echo` output goes: `"inherit"`, `"capture"` (drain with `php.$output()`), or `"ignore"`.          |
+| `filter`   | `/\.php$/`  | Which files to handle.                                                                                         |
+| `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve.                                        |
+| `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.              |
 | `runtime`  | –           | `PhpRuntimeOptions` for the interpreter behind the module — see [Driving PHP directly](#driving-php-directly). |
 
 Note that the `bun build` **CLI** cannot use plugins at all — use the

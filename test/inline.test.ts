@@ -13,9 +13,7 @@ describe("result", () => {
 
   test("a top-level return wins over output", async () => {
     expect(await BunPHP`<?php return 40 + 2;`).toBe(42);
-    expect(await BunPHP.capture`<?php echo "ignored"; return "returned";`).toBe(
-      "returned",
-    );
+    expect(await BunPHP.capture`<?php echo "ignored"; return "returned";`).toBe("returned");
   });
 
   test("falsy return values are preserved", async () => {
@@ -91,9 +89,7 @@ describe("output", () => {
 
   test("output produced before a throw is still printed", async () => {
     const out = await printed(async () => {
-      await expect(
-        BunPHP`<?php echo "before"; throw new RuntimeException("x");`,
-      ).rejects.toThrow();
+      await expect(BunPHP`<?php echo "before"; throw new RuntimeException("x");`).rejects.toThrow();
     });
     expect(out).toBe("before");
   });
@@ -140,9 +136,7 @@ describe("open and close tags", () => {
   });
 
   test("a snippet can switch modes repeatedly", async () => {
-    expect(await BunPHP.capture`<?php echo "a"; ?><i>b</i><?php echo "c";`).toBe(
-      "a<i>b</i>c",
-    );
+    expect(await BunPHP.capture`<?php echo "a"; ?><i>b</i><?php echo "c";`).toBe("a<i>b</i>c");
   });
 
   test("code after a closing tag can still return a value", async () => {

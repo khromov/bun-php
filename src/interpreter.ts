@@ -2,11 +2,7 @@ import { setPhpIniEntries } from "@php-wasm/universal";
 import type { PHP, SpawnHandler, StreamedPHPResponse } from "@php-wasm/universal";
 import { EventEmitter } from "node:events";
 import { PhpTimeoutError } from "./errors";
-import {
-  bootPhp,
-  nodeFsMountHandler,
-  type PhpRuntimeSource,
-} from "./php-runtime";
+import { bootPhp, nodeFsMountHandler, type PhpRuntimeSource } from "./php-runtime";
 
 export interface PhpMount {
   /** Absolute path on the host. */
@@ -64,13 +60,9 @@ function refusingSpawnHandler(): SpawnHandler {
  * Shared with `runtime.ts` so an imported `.php` module and a bare interpreter
  * cannot end up configured differently.
  */
-export async function applyRuntimeOptions(
-  php: PHP,
-  options: PhpRuntimeOptions,
-): Promise<void> {
+export async function applyRuntimeOptions(php: PHP, options: PhpRuntimeOptions): Promise<void> {
   if (options.spawn) {
-    const handler =
-      options.spawn === "refuse" ? refusingSpawnHandler() : options.spawn;
+    const handler = options.spawn === "refuse" ? refusingSpawnHandler() : options.spawn;
     await php.setSpawnHandler(handler);
   }
   if (options.ini) await setPhpIniEntries(php, options.ini);
@@ -232,8 +224,6 @@ export class PhpInterpreter {
   }
 }
 
-export function createInterpreter(
-  options: PhpRuntimeOptions = {},
-): PhpInterpreter {
+export function createInterpreter(options: PhpRuntimeOptions = {}): PhpInterpreter {
   return new PhpInterpreter(options);
 }

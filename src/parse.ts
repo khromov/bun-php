@@ -158,11 +158,7 @@ function readFunction(node: Node, namespacePrefix: string): PhpFunctionMeta {
     const paramName = identifierName(param.name) ?? "arg";
     return {
       name: paramName,
-      tsType: chooseType(
-        param.type,
-        Boolean(param.nullable),
-        doc?.params.get(paramName),
-      ),
+      tsType: chooseType(param.type, Boolean(param.nullable), doc?.params.get(paramName)),
       optional: param.value != null,
       variadic: Boolean(param.variadic),
       byref: Boolean(param.byref),
@@ -201,9 +197,7 @@ function chooseType(
   const bare = phpTypeToTs(typeNode, false);
   if (bare !== "PhpArray" && bare !== "any") return declared;
 
-  return nullable && !fromDoc.split(" | ").includes("null")
-    ? `${fromDoc} | null`
-    : fromDoc;
+  return nullable && !fromDoc.split(" | ").includes("null") ? `${fromDoc} | null` : fromDoc;
 }
 
 interface Docblock {
@@ -388,9 +382,7 @@ function phpArrayKey(raw: PhpValue): string | number | typeof NOT_STATIC {
     return Number.isFinite(raw) ? Math.trunc(raw) : NOT_STATIC;
   }
   if (typeof raw === "string") {
-    return /^(0|-?[1-9]\d*)$/.test(raw) && Number.isSafeInteger(Number(raw))
-      ? Number(raw)
-      : raw;
+    return /^(0|-?[1-9]\d*)$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : raw;
   }
   return NOT_STATIC;
 }

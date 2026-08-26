@@ -48,7 +48,10 @@ afterAll(async () => {
 describe("mounted project directory", () => {
   test("a sibling file can be required", async () => {
     const dir = await scratch();
-    await Bun.write(join(dir, "helper.php"), `<?php function helper(): string { return "helped"; }`);
+    await Bun.write(
+      join(dir, "helper.php"),
+      `<?php function helper(): string { return "helped"; }`,
+    );
     const main = join(dir, "main.php");
     const source = `<?php
 require_once __DIR__ . '/helper.php';

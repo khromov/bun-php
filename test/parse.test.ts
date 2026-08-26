@@ -57,10 +57,7 @@ describe("function discovery", () => {
       `<?php namespace A\\B { function inner() {} } namespace { function outer() {} }`,
       "/virtual/t.php",
     );
-    expect(meta.functions.map((f) => f.phpName).sort()).toEqual([
-      "A\\B\\inner",
-      "outer",
-    ]);
+    expect(meta.functions.map((f) => f.phpName).sort()).toEqual(["A\\B\\inner", "outer"]);
   });
 
   test("skips a function whose export name collides", () => {
@@ -75,8 +72,9 @@ describe("function discovery", () => {
 
 describe("parameter types", () => {
   test("maps scalar type hints", () => {
-    expect(signature(fn(`function f(int $a, float $b, string $c, bool $d) {}`)))
-      .toBe("(a: number, b: number, c: string, d: boolean) => any");
+    expect(signature(fn(`function f(int $a, float $b, string $c, bool $d) {}`))).toBe(
+      "(a: number, b: number, c: string, d: boolean) => any",
+    );
   });
 
   test("untyped parameters fall back to any", () => {
@@ -84,35 +82,24 @@ describe("parameter types", () => {
   });
 
   test("?T and T|null produce the same type", () => {
-    expect(fn(`function f(?int $a): ?string {}`).params[0]!.tsType).toBe(
-      "number | null",
-    );
-    expect(fn(`function f(int|null $a): string|null {}`).params[0]!.tsType).toBe(
-      "number | null",
-    );
-    expect(fn(`function f(?int $a): ?string {}`).returnTsType).toBe(
-      "string | null",
-    );
-    expect(fn(`function f(int|null $a): string|null {}`).returnTsType).toBe(
-      "string | null",
-    );
+    expect(fn(`function f(?int $a): ?string {}`).params[0]!.tsType).toBe("number | null");
+    expect(fn(`function f(int|null $a): string|null {}`).params[0]!.tsType).toBe("number | null");
+    expect(fn(`function f(?int $a): ?string {}`).returnTsType).toBe("string | null");
+    expect(fn(`function f(int|null $a): string|null {}`).returnTsType).toBe("string | null");
   });
 
   test("union types map to TypeScript unions", () => {
-    expect(fn(`function f(int|float|string $a) {}`).params[0]!.tsType).toBe(
-      "number | string",
-    );
+    expect(fn(`function f(int|float|string $a) {}`).params[0]!.tsType).toBe("number | string");
   });
 
   test("intersection types are opaque", () => {
-    expect(fn(`function f(\\Countable&\\ArrayAccess $a) {}`).params[0]!.tsType).toBe(
-      "unknown",
-    );
+    expect(fn(`function f(\\Countable&\\ArrayAccess $a) {}`).params[0]!.tsType).toBe("unknown");
   });
 
   test("class references map to an object shape", () => {
-    expect(fn(`function f(\\App\\Thing $t): \\App\\Thing {}`).params[0]!.tsType)
-      .toBe("Record<string, unknown>");
+    expect(fn(`function f(\\App\\Thing $t): \\App\\Thing {}`).params[0]!.tsType).toBe(
+      "Record<string, unknown>",
+    );
   });
 
   test("array maps to PhpArray, void to void, mixed to any", () => {
@@ -154,8 +141,7 @@ describe("docblocks", () => {
   });
 
   test("a declared type beats the docblock", () => {
-    expect(fn(`/** @param int $a */ function f(string $a) {}`).params[0]!.tsType)
-      .toBe("string");
+    expect(fn(`/** @param int $a */ function f(string $a) {}`).params[0]!.tsType).toBe("string");
   });
 
   test("the docblock beats a bare array hint", () => {
@@ -170,34 +156,38 @@ describe("docblocks", () => {
   });
 
   test("integer-keyed generics are lists, not records", () => {
-    expect(fn(`/** @return array<int, string> */ function f() {}`).returnTsType)
-      .toBe("string[]");
-    expect(fn(`/** @return list<int> */ function f() {}`).returnTsType)
-      .toBe("number[]");
-    expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType)
-      .toBe("Record<string, number>");
+    expect(fn(`/** @return array<int, string> */ function f() {}`).returnTsType).toBe("string[]");
+    expect(fn(`/** @return list<int> */ function f() {}`).returnTsType).toBe("number[]");
+    expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType).toBe(
+      "Record<string, number>",
+    );
   });
 
   test("generics containing spaces are not truncated", () => {
-    expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType)
-      .toBe("Record<string, number>");
+    expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType).toBe(
+      "Record<string, number>",
+    );
   });
 
   test("nullable declaration survives a docblock override", () => {
-    expect(fn(`/** @param int[] $a */ function f(?array $a) {}`).params[0]!.tsType)
-      .toBe("number[] | null");
+    expect(fn(`/** @param int[] $a */ function f(?array $a) {}`).params[0]!.tsType).toBe(
+      "number[] | null",
+    );
   });
 
   test("unions inside generics are not shredded", () => {
-    expect(fn(`/** @return array<int|string> */ function f() {}`).returnTsType)
-      .toBe("(number | string)[]");
-    expect(fn(`/** @return array<string, int|null> */ function f() {}`).returnTsType)
-      .toBe("Record<string, number | null>");
+    expect(fn(`/** @return array<int|string> */ function f() {}`).returnTsType).toBe(
+      "(number | string)[]",
+    );
+    expect(fn(`/** @return array<string, int|null> */ function f() {}`).returnTsType).toBe(
+      "Record<string, number | null>",
+    );
   });
 
   test("a parenthesised union with an array suffix survives", () => {
-    expect(fn(`/** @param (int|string)[] $x */ function f(array $x) {}`).params[0]!.tsType)
-      .toBe("(number | string)[]");
+    expect(fn(`/** @param (int|string)[] $x */ function f(array $x) {}`).params[0]!.tsType).toBe(
+      "(number | string)[]",
+    );
   });
 });
 
@@ -278,9 +268,7 @@ describe("constants", () => {
   });
 
   test("skips functions named after generated bindings", () => {
-    const meta = parse(
-      `function __mod() {} function createPhpModule() {} function _default() {}`,
-    );
+    const meta = parse(`function __mod() {} function createPhpModule() {} function _default() {}`);
     expect(meta.functions).toEqual([]);
     expect(meta.skipped).toHaveLength(3);
   });
@@ -351,9 +339,7 @@ describe("errors", () => {
   });
 
   test("a syntax error becomes a PhpParseError with a line number", () => {
-    expect(() => parsePhp("<?php function {", "/virtual/bad.php")).toThrow(
-      PhpParseError,
-    );
+    expect(() => parsePhp("<?php function {", "/virtual/bad.php")).toThrow(PhpParseError);
     try {
       parsePhp("<?php function {", "/virtual/bad.php");
     } catch (error) {

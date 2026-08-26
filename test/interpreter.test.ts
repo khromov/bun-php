@@ -41,11 +41,7 @@ describe("createInterpreter", () => {
         const php = createInterpreter();
         try {
           await php.mount(dir, "/data");
-          const result = await php.cli([
-            "php",
-            "-r",
-            'echo file_get_contents("/data/data.txt");',
-          ]);
+          const result = await php.cli(["php", "-r", 'echo file_get_contents("/data/data.txt");']);
           expect(result.stdout).toBe("from the host");
         } finally {
           await php.dispose();
@@ -62,11 +58,7 @@ describe("createInterpreter", () => {
         await writeFile(join(dir, "a.txt"), "mounted");
         const php = createInterpreter({ mounts: [{ host: dir, at: "/m" }] });
         try {
-          const result = await php.cli([
-            "php",
-            "-r",
-            'echo file_get_contents("/m/a.txt");',
-          ]);
+          const result = await php.cli(["php", "-r", 'echo file_get_contents("/m/a.txt");']);
           expect(result.stdout).toBe("mounted");
         } finally {
           await php.dispose();
@@ -81,11 +73,7 @@ describe("createInterpreter", () => {
     async () => {
       const php = createInterpreter({ ini: { memory_limit: "512M" } });
       try {
-        const result = await php.cli([
-          "php",
-          "-r",
-          'echo ini_get("memory_limit");',
-        ]);
+        const result = await php.cli(["php", "-r", 'echo ini_get("memory_limit");']);
         expect(result.stdout).toBe("512M");
       } finally {
         await php.dispose();
@@ -99,11 +87,7 @@ describe("createInterpreter", () => {
     async () => {
       const php = createInterpreter({ spawn: "refuse" });
       try {
-        const result = await php.cli([
-          "php",
-          "-r",
-          'var_dump(shell_exec("tty"));',
-        ]);
+        const result = await php.cli(["php", "-r", 'var_dump(shell_exec("tty"));']);
         expect(result.stdout).toContain("NULL");
       } finally {
         await php.dispose();
@@ -121,11 +105,7 @@ describe("createInterpreter", () => {
       try {
         await php.mkdir("/s");
         await php.writeFile("/s/f.txt", "staged");
-        const first = await php.cli([
-          "php",
-          "-r",
-          'echo file_get_contents("/s/f.txt");',
-        ]);
+        const first = await php.cli(["php", "-r", 'echo file_get_contents("/s/f.txt");']);
         const second = await php.cli([
           "php",
           "-r",
@@ -218,11 +198,7 @@ describe("timeouts", () => {
       const php = createInterpreter({ timeoutMs: 500 });
       try {
         const error = await php
-          .cli([
-            "php",
-            "-r",
-            '$t=microtime(true); while (microtime(true)-$t < 5) {}',
-          ])
+          .cli(["php", "-r", "$t=microtime(true); while (microtime(true)-$t < 5) {}"])
           .catch((err: unknown) => err);
         expect(error).toBeInstanceOf(PhpTimeoutError);
         expect((error as PhpTimeoutError).timeoutMs).toBe(500);
@@ -254,28 +230,24 @@ describe("timeouts", () => {
 });
 
 describe("concurrency", () => {
-  test(
-    "two interpreters do not overlap — the wasm work holds the thread",
-    async () => {
-      // Pins the reason there is no pool API: a second instance buys nothing.
-      // Parallelism needs a Worker per interpreter, which is a caller's choice.
-      const busy = () =>
-        createInterpreter().cli([
-          "php",
-          "-r",
-          '$t=microtime(true); while (microtime(true)-$t < 1) {} echo "ok";',
-        ]);
+  test("two interpreters do not overlap — the wasm work holds the thread", async () => {
+    // Pins the reason there is no pool API: a second instance buys nothing.
+    // Parallelism needs a Worker per interpreter, which is a caller's choice.
+    const busy = () =>
+      createInterpreter().cli([
+        "php",
+        "-r",
+        '$t=microtime(true); while (microtime(true)-$t < 1) {} echo "ok";',
+      ]);
 
-      const oneStart = Date.now();
-      await busy();
-      const oneMs = Date.now() - oneStart;
+    const oneStart = Date.now();
+    await busy();
+    const oneMs = Date.now() - oneStart;
 
-      const twoStart = Date.now();
-      await Promise.all([busy(), busy()]);
-      const twoMs = Date.now() - twoStart;
+    const twoStart = Date.now();
+    await Promise.all([busy(), busy()]);
+    const twoMs = Date.now() - twoStart;
 
-      expect(twoMs).toBeGreaterThan(oneMs * 1.6);
-    },
-    120_000,
-  );
+    expect(twoMs).toBeGreaterThan(oneMs * 1.6);
+  }, 120_000);
 });

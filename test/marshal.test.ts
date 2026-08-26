@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  decodeOutput,
-  encodeArgs,
-  encodeValue,
-  EnvelopeSplitter,
-  SENTINEL,
-} from "../src/marshal";
+import { decodeOutput, encodeArgs, encodeValue, EnvelopeSplitter, SENTINEL } from "../src/marshal";
 
 describe("encodeArgs", () => {
   test("drops trailing undefined so PHP defaults apply", () => {
@@ -14,9 +8,7 @@ describe("encodeArgs", () => {
   });
 
   test("rejects an undefined hole with the function name and position", () => {
-    expect(() => encodeArgs([undefined, 1], "f")).toThrow(
-      /f: argument #1 is undefined/,
-    );
+    expect(() => encodeArgs([undefined, 1], "f")).toThrow(/f: argument #1 is undefined/);
   });
 
   test("encodes BigInt as a PHP int literal", () => {
