@@ -10,6 +10,14 @@
     "wasm"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khromov/bun-php.git"
+  },
+  "homepage": "https://github.com/khromov/bun-php#readme",
+  "bugs": {
+    "url": "https://github.com/khromov/bun-php/issues"
+  },
   "files": [
     "src",
     "types",
