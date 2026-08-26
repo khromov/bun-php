@@ -279,17 +279,57 @@ const { stdout, exitCode } = await php.cli([
 ]);
 ```
 
-| Option       | Default | Meaning                                                                  |
-| ------------ | ------- | ------------------------------------------------------------------------ |
-| `phpVersion` | `"8.5"` | Which build to boot. Anything else must be installed by you — see below. |
-| `loader`     | –       | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.  |
-| `ini`        | –       | `php.ini` entries, applied before the first call.                        |
-| `spawn`      | –       | `"refuse"`, or your own handler. See the warning below.                  |
-| `mounts`     | –       | `{ host, at }` directories to mount up front.                            |
-| `timeoutMs`  | –       | Deadline for `cli()`. Bounds _waiting_, not the work — see Limitations.  |
+| Option       | Default | Meaning                                                                                                                            |
+| ------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `phpVersion` | `"8.5"` | Which build to boot. Anything else must be installed by you — see below.                                                           |
+| `loader`     | –       | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.                                                            |
+| `ini`        | –       | `php.ini` entries, applied before the first call.                                                                                  |
+| `spawn`      | –       | `"refuse"`, or your own handler. See the warning below.                                                                            |
+| `mounts`     | –       | `{ host, at }` directories to mount up front.                                                                                      |
+| `timeoutMs`  | –       | Deadline for `cli()`. In-process it bounds _waiting_, not the work — see Limitations. With `isolation: "process"` it is a SIGKILL. |
+| `isolation`  | –       | `"process"` runs each `cli()` in a child process that exits afterwards.                                                            |
 
 Beyond `cli()`, an interpreter offers `mount()`, `ini()`, `writeFile()`,
 `mkdir()`, `php()` (the raw php-wasm instance) and `dispose()`.
+
+### Process isolation
+
+For a handful of calls the in-process interpreter is fine. For running a tool
+across thousands of inputs it is not, for three measured reasons: the wasm heap
+retains hundreds of MB across boot/dispose cycles and never returns to
+baseline; a timeout cannot stop a running request, only abandon it; and two
+interpreters cannot overlap, because the wasm work holds the thread.
+
+`isolation: "process"` fixes all three at once by running every `cli()` in a
+child process that exits when the call ends:
+
+```ts
+const php = createInterpreter({
+  isolation: "process",
+  phpVersion: "8.3",
+  spawn: "refuse",
+  ini: { memory_limit: "1024M" },
+  timeoutMs: 600_000, // a real deadline: the child is SIGKILLed
+});
+
+await php.mount(exportDir, "/plugin");
+await php.writeFile("/files.txt", list);
+const { stdout, exitCode } = await php.cli(["php", "/tools/phpcs.phar", ...]);
+```
+
+`mount`/`writeFile`/`mkdir`/`ini` are recorded and replayed inside each child,
+so the interpreter behaves identically — the same journal that makes a second
+in-process `cli()` work is what crosses the process boundary. Measured across
+ten calls, the parent's RSS moves by ~1 MB where the in-process equivalent
+retains 300–800 MB; two concurrent one-second calls take 1.04× the time of one
+rather than 1.96×; and a killed call leaves the interpreter usable, since the
+dead child took the whole request with it.
+
+The trade is that everything must survive JSON: `loader` and a function-valued
+`spawn` are rejected at construction (`spawn: "refuse"` serializes fine), and
+`php()` has no in-process instance to hand back. Each call also pays a child
+spawn plus a fresh wasm boot — a few hundred milliseconds — which is noise for
+a tool run and wrong for a hot loop of small calls.
 
 The same options are accepted by the plugin, so an imported `.php` file can be
 configured identically:
@@ -405,17 +445,18 @@ state on the JavaScript side.
 from JavaScript: `PHP.exit()` mid-call returns without stopping anything, and
 `max_execution_time` is ignored by the wasm build — a script asking for a
 two-second limit was measured running for the full eight seconds it was told to
-burn. `timeoutMs` therefore rejects your promise and retires the interpreter,
-but **the PHP keeps running**. The only real bound is a process you can kill, so
-put anything that might run away in a `Worker` or a subprocess and terminate
-that.
+burn. In-process, `timeoutMs` therefore rejects your promise and retires the
+interpreter, but **the PHP keeps running**. The only real bound is a process you
+can kill, which is exactly what `isolation: "process"` is: under it `timeoutMs`
+SIGKILLs the child and the work actually stops.
 
-**Interpreters do not run in parallel.** The wasm work holds the thread, so two
-concurrent one-second calls on two separate interpreters take two seconds, not
-one. There is deliberately no pool API, because a second interpreter in the same
-process buys nothing. For real parallelism, give each interpreter its own
-`Worker` — which you want anyway, since a wasm abort is not catchable and takes
-the whole process with it.
+**In-process interpreters do not run in parallel.** The wasm work holds the
+thread, so two concurrent one-second calls on two separate interpreters take two
+seconds, not one. There is deliberately no pool API, because a second
+interpreter in the same process buys nothing. `isolation: "process"` is what
+buys parallelism — each child runs on its own core — and it is also the
+crash-safe shape, since a wasm abort is not catchable and takes its process
+with it.
 
 **Other things to know:**
 

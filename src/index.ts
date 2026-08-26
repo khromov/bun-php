@@ -15,6 +15,8 @@ export {
   type PhpMount,
   type PhpRuntimeOptions,
 } from "./interpreter";
+export type { JournalOp } from "./journal";
+export type { IsolationReply, IsolationRequest } from "./isolation";
 export {
   bootPhp,
   nodeFsMountHandler,

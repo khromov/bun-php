@@ -51,21 +51,23 @@ The generated module imports `createPhpModule` from `runtime.ts` and exports one
 function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, decode the result) →
 `php-runtime.ts` (the interpreter).
 
-| File                 | Responsibility                                                                                |
-| -------------------- | --------------------------------------------------------------------------------------------- |
-| `src/plugin.ts`      | `onLoad` hook, option defaults, sidecar writing                                               |
-| `src/register.ts`    | Side-effecting `plugin(phpPlugin())` for `preload`                                            |
-| `src/parse.ts`       | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes)                           |
-| `src/php-types.ts`   | PHP type hints and docblock types → TypeScript type expressions                               |
-| `src/codegen.ts`     | Emits the JS module                                                                           |
-| `src/dts.ts`         | Emits the `.d.ts` sidecar                                                                     |
-| `src/runtime.ts`     | Interpreter cache, lifecycle (`$ready`/`$reset`/`$dispose`), stdout modes                     |
-| `src/inline.ts`      | The `` BunPHP`...` `` tagged template for file-less snippets                                  |
-| `src/marshal.ts`     | The JS ⇄ PHP call protocol                                                                    |
-| `src/project.ts`     | Walks up from a `.php` file to find its Composer root and autoloader                          |
-| `src/php-runtime.ts` | The only module importing `@php-wasm/*`, the version→build map, plus the NODEFS mount handler |
-| `src/interpreter.ts` | `createInterpreter` — a configured interpreter with no `.php` file behind it                  |
-| `types/php.d.ts`     | Fallback `*.php` module declaration for users not generating sidecars                         |
+| File                                           | Responsibility                                                                                |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `src/plugin.ts`                                | `onLoad` hook, option defaults, sidecar writing                                               |
+| `src/register.ts`                              | Side-effecting `plugin(phpPlugin())` for `preload`                                            |
+| `src/parse.ts`                                 | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes)                           |
+| `src/php-types.ts`                             | PHP type hints and docblock types → TypeScript type expressions                               |
+| `src/codegen.ts`                               | Emits the JS module                                                                           |
+| `src/dts.ts`                                   | Emits the `.d.ts` sidecar                                                                     |
+| `src/runtime.ts`                               | Interpreter cache, lifecycle (`$ready`/`$reset`/`$dispose`), stdout modes                     |
+| `src/inline.ts`                                | The `` BunPHP`...` `` tagged template for file-less snippets                                  |
+| `src/marshal.ts`                               | The JS ⇄ PHP call protocol                                                                    |
+| `src/project.ts`                               | Walks up from a `.php` file to find its Composer root and autoloader                          |
+| `src/php-runtime.ts`                           | The only module importing `@php-wasm/*`, the version→build map, plus the NODEFS mount handler |
+| `src/interpreter.ts`                           | `createInterpreter` — a configured interpreter with no `.php` file behind it                  |
+| `src/journal.ts`                               | Serializable filesystem/config ops, replayed on instance replacement and shipped to children  |
+| `src/isolation.ts` + `src/isolation-runner.ts` | `isolation: "process"` — parent spawn/timeout half and the child entrypoint                   |
+| `types/php.d.ts`                               | Fallback `*.php` module declaration for users not generating sidecars                         |
 
 ## Things that will bite you
 
@@ -149,24 +151,43 @@ fails to load.
 
 **`PHP.cli()` consumes its instance.** It calls `exit()` on the runtime when the command finishes, and a
 second `cli()` on the same instance returns exit code **-1 with no output and no error at all** — a silent
-failure. `PhpInterpreter` therefore boots a replacement between commands and replays the staged filesystem
-work (`#staged`) onto it, which is why `mount`/`writeFile`/`mkdir`/`ini` record a closure rather than just
-acting. `#stage` awaits `php()` _before_ recording, because `#boot` replays what is already staged and
-recording first would run the new step twice on the very first call.
+failure. `PhpInterpreter` therefore boots a replacement between commands and replays the journal
+(`src/journal.ts`) onto it, which is why `mount`/`writeFile`/`mkdir`/`ini` record a `JournalOp` rather than
+just acting. The ops are plain data on purpose: the same journal is what `isolation: "process"` ships to its
+child, so the two mechanisms cannot drift. `replay` awaits `php()` _before_ recording, because `#boot`
+replays the journal and recording first would run the new op twice on the very first call.
 
-**Neither timeouts nor parallelism work the way you would assume**, both measured:
+**Neither timeouts nor parallelism work the way you would assume in-process**, both measured:
 
 - A running request cannot be interrupted. `PHP.exit()` mid-call returns without stopping it (a busy loop then
-  ran to completion), and `max_execution_time` is ignored — a 2s limit let an 8s loop finish. So `timeoutMs`
-  bounds _waiting_ only: it rejects and retires the interpreter while the PHP keeps burning CPU. Say so
-  wherever it is documented; a timeout that implies cancellation is worse than none.
+  ran to completion), and `max_execution_time` is ignored — a 2s limit let an 8s loop finish. So in-process
+  `timeoutMs` bounds _waiting_ only: it rejects and retires the interpreter while the PHP keeps burning CPU.
+  Say so wherever it is documented; a timeout that implies cancellation is worse than none.
 - Interpreters do not overlap. Two concurrent 1s calls on two instances take ~2s (ratio 1.96), because the
   wasm holds the thread. That is why there is no pool API — a second interpreter in-process buys nothing, and
   `test/interpreter.test.ts` pins the ratio so nobody adds one on a hunch.
 
+**`isolation: "process"` exists because of the previous paragraph**, plus one more measurement: the wasm heap
+retains hundreds of MB across in-process boot/dispose cycles (35 MB baseline → 300–800 MB after a handful,
+forced GC included) and the OS reclaiming an exited child is the only thing that returns it. Each `cli()`
+spawns `src/isolation-runner.ts`, ships `{options, journal, argv}` as JSON, and SIGKILLs on timeout — so
+under isolation `timeoutMs` really cancels, concurrent calls really overlap (1.04x measured), and a wasm
+abort takes only the child. The constructor rejects `loader` and function-valued `spawn` up front because
+they cannot cross the JSON boundary, `php()` throws for the same reason, and `createPhpModule` refuses
+`runtime.isolation` outright — the imported-module path runs many small calls against one live instance,
+the opposite shape. The runner deliberately constructs a plain in-process `PhpInterpreter`: the child _is_
+the isolation, and reusing `#cli` keeps the two paths from diverging.
+
 **Sidecar `.d.ts` files:** `test/fixtures/*.php.d.ts` and `demos/php/*.php.d.ts` are gitignored (regenerated
 on the next run); `example/hello.php.d.ts` is committed on purpose as a worked example. `demos/vendor/` is
 gitignored, `demos/composer.lock` is committed.
+
+## Comments
+
+Comment the **why**, never the what — the code already says what it does. Max **one sentence** per
+comment; two only for a genuinely complex piece (a non-obvious constraint, a bug worked around, an
+ordering dependency). Longer rationale belongs in this file or the README, not in the source. Prefer
+no comment to an obvious one.
 
 ## Bun conventions
 
