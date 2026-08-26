@@ -1,4 +1,4 @@
-# bun-php 🐘
+# 🐘 bun-php
 
 Now you can finally run PHP files in Bun! Simply import `.php` files and bun-php converts them to async, typed JavaScript functions running under PHP 8.5!
 
