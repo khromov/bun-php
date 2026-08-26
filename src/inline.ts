@@ -89,9 +89,9 @@ function endsInHtmlMode(code: string): boolean {
  * Turn a snippet into a closure body, preserving PHP's own file semantics.
  *
  * A PHP file starts in markup mode, switches to code at `<?php`, and may leave
- * it again at `?>` — where both the opening and the closing tag are optional.
- * The snippet runs inside a closure, which starts in *code* mode, so the two
- * ends are reconciled here:
+ * it again at the (optional) `?>`. The snippet runs inside a closure, which
+ * starts in *code* mode instead, so the two ends are reconciled here — which is
+ * also why a tag-less snippet is code, not the markup a tag-less file would be:
  *
  *   - a snippet that opens with a tag has it stripped, since the closure is
  *     already in code mode;

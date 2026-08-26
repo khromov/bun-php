@@ -120,7 +120,9 @@ await BunPHP.capture`<?php return 40 + 2;`; // 42 — a return still wins
 await BunPHP.capture`<?php $unused = 1;`; // "" — printed nothing
 ```
 
-Tags are optional, exactly as in a PHP file:
+Both tags are optional in a snippet. The closing `?>` is optional in PHP
+anyway; the opening tag can be dropped too, since a snippet runs as code by
+default (unlike a `.php` file, where tag-less content is markup):
 
 ```ts
 await BunPHP.capture`<?php echo "hi";`; // "hi"  — no closing tag
@@ -130,9 +132,6 @@ await BunPHP.capture`<?= 6 * 7 ?>`; // "42"  — short echo
 await BunPHP.capture`<p>a</p><?php echo "b";`; // "<p>a</p>b" — markup first
 await BunPHP.capture`<?php echo "a"; ?><i>b</i>`; // "a<i>b</i>" — mode switch
 ```
-
-A tag-less snippet is read as PHP code, not markup — that's what inline
-snippets are for.
 
 Because it's a plain runtime API, inline PHP needs no plugin registration and
 no `preload` entry.
