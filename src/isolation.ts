@@ -2,11 +2,7 @@ import { PhpTimeoutError } from "./errors";
 import type { JournalOp } from "./journal";
 import type { PhpCliResult, PhpRuntimeOptions } from "./interpreter";
 
-/**
- * What crosses the wire to the runner. Everything here must survive JSON,
- * which is why `loader` and a function-valued `spawn` are rejected before an
- * isolated interpreter is ever constructed.
- */
+/** What crosses the wire to the runner; everything here must survive JSON. */
 export interface IsolationRequest {
   options: Pick<PhpRuntimeOptions, "phpVersion" | "ini" | "mounts"> & {
     spawn?: "refuse";
@@ -21,19 +17,13 @@ export type IsolationReply =
   | { ok: true; result: PhpCliResult }
   | { ok: false; name: string; error: string };
 
-/**
- * The runner, resolved by absolute path like the plugin's RUNTIME_PATH, so it
- * is found whether bun-php is a dependency, a link, or this repository.
- */
+// Resolved by absolute path like the plugin's RUNTIME_PATH, so it is found
+// whether bun-php is a dependency, a link, or this repository.
 const RUNNER_PATH = Bun.fileURLToPath(new URL("./isolation-runner.ts", import.meta.url));
 
 /**
- * Run one CLI invocation in a child process that exits afterwards.
- *
- * The process boundary is what makes two things true that no in-process mode
- * can offer: the deadline is a SIGKILL, so the work actually stops rather than
- * merely being abandoned; and the wasm heap — which never shrinks and retains
- * hundreds of MB across boot/dispose cycles — is reclaimed whole by the OS.
+ * Run one CLI invocation in a child process that exits afterwards, so the
+ * deadline is a SIGKILL and the wasm heap is reclaimed whole by the OS.
  */
 export async function runIsolatedCli(
   request: IsolationRequest,

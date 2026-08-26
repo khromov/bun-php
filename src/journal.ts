@@ -3,12 +3,9 @@ import type { PHP } from "@php-wasm/universal";
 import { nodeFsMountHandler } from "./php-runtime";
 
 /**
- * One recorded filesystem/config step, in a shape that survives JSON.
- *
- * The journal exists for two reasons that share a mechanism: `PHP.cli()`
- * consumes its instance, so a replacement has to replay what was staged; and
- * `isolation: "process"` ships the same steps to a child process, which only
- * works because nothing in them is a function.
+ * One recorded filesystem/config step, kept as plain data because the same
+ * journal both replays onto the replacement instance `PHP.cli()` forces and
+ * ships to an `isolation: "process"` child as JSON.
  */
 export type JournalOp =
   | { readonly kind: "mount"; readonly host: string; readonly at: string }

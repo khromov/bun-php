@@ -182,6 +182,13 @@ the isolation, and reusing `#cli` keeps the two paths from diverging.
 on the next run); `example/hello.php.d.ts` is committed on purpose as a worked example. `demos/vendor/` is
 gitignored, `demos/composer.lock` is committed.
 
+## Comments
+
+Comment the **why**, never the what — the code already says what it does. Max **one sentence** per
+comment; two only for a genuinely complex piece (a non-obvious constraint, a bug worked around, an
+ordering dependency). Longer rationale belongs in this file or the README, not in the source. Prefer
+no comment to an obvious one.
+
 ## Bun conventions
 
 Default to Bun over Node.js: `bun <file>`, `bun test`, `bun install`, `bun run <script>`, `bunx <pkg>`.

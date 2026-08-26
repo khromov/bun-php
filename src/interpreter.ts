@@ -28,17 +28,10 @@ export interface PhpRuntimeOptions extends PhpRuntimeSource {
   /** Default deadline for {@link PhpInterpreter.cli}; see its caveat. */
   timeoutMs?: number;
   /**
-   * `"process"` runs every `cli()` in a child process that exits afterwards.
-   *
-   * This is the mode for driving PHP at volume, because it fixes the three
-   * things the in-process interpreter cannot: `timeoutMs` becomes a SIGKILL
-   * that actually stops the work; the wasm heap — which retains hundreds of MB
-   * across boot/dispose cycles and never returns to baseline — is reclaimed
-   * whole by the OS after every call; and concurrent calls run on separate
-   * cores instead of serialising on the one thread the wasm holds.
-   *
-   * The trade: options must survive JSON, so `loader` and a function-valued
-   * `spawn` are rejected up front, and `php()` has no instance to hand back.
+   * `"process"` runs every `cli()` in a child that exits afterwards, which is
+   * what makes `timeoutMs` a real SIGKILL, lets the OS reclaim the wasm heap
+   * (in-process it never returns to baseline), and lets calls overlap. The
+   * trade: options must survive JSON — see the README.
    */
   isolation?: "process";
 }
@@ -89,15 +82,11 @@ export async function applyRuntimeOptions(php: PHP, options: PhpRuntimeOptions):
 }
 
 /**
- * A configured PHP interpreter with no `.php` import behind it.
- *
- * The plugin bakes its options into the generated module at load time, which
- * cannot express a mount path or an argument that is only known per call. This
- * is the seam for driving PHP directly — a CLI tool, a phar, a scratch script.
- *
- * In-process, interpreters do **not** overlap with each other: two concurrent
- * one-second calls on two separate instances take two seconds, because the
- * wasm work holds the thread. `isolation: "process"` is what buys parallelism.
+ * A configured PHP interpreter with no `.php` import behind it — the seam for
+ * driving PHP directly, since the plugin bakes its options into the generated
+ * module at load time and cannot express a per-call mount or argument.
+ * In-process calls never overlap (the wasm holds the thread); `isolation:
+ * "process"` is what buys parallelism.
  */
 export class PhpInterpreter {
   #php: PHP | null = null;
@@ -115,9 +104,8 @@ export class PhpInterpreter {
 
   constructor(private readonly options: PhpRuntimeOptions = {}) {
     if (options.isolation === "process") {
-      // Everything an isolated interpreter is told must survive JSON to reach
-      // the child; a closure cannot, so refusing it here beats a child that
-      // silently runs without it.
+      // A closure cannot cross the JSON boundary, and refusing it here beats a
+      // child that silently runs without it.
       if (options.loader) {
         throw new TypeError(
           "isolation: 'process' cannot ship a loader function to the child; use phpVersion instead",
@@ -132,10 +120,8 @@ export class PhpInterpreter {
   }
 
   /**
-   * Boot lazily, and only once even under concurrent first calls.
-   *
-   * Unavailable under `isolation: "process"` — the interpreter lives in a
-   * child that exits after each call, so there is no instance to hand back.
+   * Boot lazily, and only once even under concurrent first calls; under
+   * `isolation: "process"` there is no in-process instance to hand back.
    */
   php(): Promise<PHP> {
     if (this.options.isolation === "process") {
@@ -244,14 +230,9 @@ export class PhpInterpreter {
   }
 
   /**
-   * Give the caller its turn back after `timeoutMs`, in-process.
-   *
-   * php-wasm cannot interrupt a running request — `PHP.exit()` mid-call returns
-   * without stopping it, verified against a busy loop that then ran to
-   * completion — so this bounds *waiting*, never the work. The interpreter is
-   * retired rather than reused, since the abandoned request is still using it.
-   * Under `isolation: "process"` the deadline is a SIGKILL instead, which
-   * stops the work for real.
+   * php-wasm cannot interrupt a running request, so this bounds *waiting*,
+   * never the work. The interpreter is retired rather than reused, since the
+   * abandoned request is still using it.
    */
   async #deadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
