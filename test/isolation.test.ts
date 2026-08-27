@@ -52,6 +52,29 @@ describe("isolation: 'process'", () => {
   );
 
   test(
+    "mounts and ini given as options reach the child exactly once",
+    async () => {
+      await withTempDir(async (dir) => {
+        await writeFile(join(dir, "a.txt"), "mounted");
+        const php = createInterpreter({
+          isolation: "process",
+          ini: { memory_limit: "512M" },
+          mounts: [{ host: dir, at: "/m" }],
+        });
+        // Mounting a point twice throws, so options travelling both as options and in
+        // the journal would make the child fail rather than pass.
+        const result = await php.cli([
+          "php",
+          "-r",
+          'echo ini_get("memory_limit"), "|", file_get_contents("/m/a.txt");',
+        ]);
+        expect(result.stdout).toBe("512M|mounted");
+      });
+    },
+    BOOT_MS,
+  );
+
+  test(
     "binary writeFile data survives the JSON boundary",
     async () => {
       const php = createInterpreter({ isolation: "process" });

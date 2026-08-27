@@ -6,6 +6,23 @@ afterAll(async () => {
   await BunPHP.dispose();
 });
 
+/** Run something, returning whatever it wrote to the terminal. */
+async function printed(run: () => Promise<unknown>): Promise<string> {
+  const chunks: string[] = [];
+  const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+    chunks.push(String(chunk));
+    return true;
+  });
+
+  try {
+    await run();
+  } finally {
+    write.mockRestore();
+  }
+
+  return chunks.join("");
+}
+
 describe("result", () => {
   test("printed output comes back as a string", async () => {
     expect(await BunPHP.capture`<?php echo "Hello world";`).toBe("Hello world");
@@ -40,23 +57,6 @@ describe("result", () => {
 });
 
 describe("output", () => {
-  /** Run something, returning whatever it wrote to the terminal. */
-  async function printed(run: () => Promise<unknown>): Promise<string> {
-    const chunks: string[] = [];
-    const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      chunks.push(String(chunk));
-      return true;
-    });
-
-    try {
-      await run();
-    } finally {
-      write.mockRestore();
-    }
-
-    return chunks.join("");
-  }
-
   test("echo reaches the terminal, as it does from an imported .php file", async () => {
     expect(await printed(() => BunPHP`<?php echo "Hello world";`)).toBe("Hello world");
   });
@@ -245,6 +245,19 @@ describe("concurrency", () => {
       BunPHP`<?php usleep(1000); return 3;`,
     ]);
     expect(results).toEqual([1, 2, 3]);
+  });
+
+  test("overlapping printing snippets print in call order", async () => {
+    // bun-php does not queue snippets itself; php-wasm runs one request at a time,
+    // in the order they were started, and that is what keeps the terminal in order.
+    const out = await printed(() =>
+      Promise.all([
+        BunPHP`<?php usleep(20000); echo "first";`,
+        BunPHP`<?php echo "second";`,
+        BunPHP`<?php usleep(10000); echo "third";`,
+      ]),
+    );
+    expect(out).toBe("firstsecondthird");
   });
 });
 

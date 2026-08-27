@@ -9,6 +9,16 @@ const cache = () => (globalThis as Record<string, any>).__bunPhpInstances as Map
 const moduleWith = (id: string, stdout: StdoutMode) =>
   createPhpModule({ id, source: "<?php\n", functions: {}, meta, stdout });
 
+/** A `loader` that counts how many times the wasm runtime was instantiated. */
+function countingLoader() {
+  const counter = { boots: 0 };
+  const loader = async () => {
+    counter.boots++;
+    return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
+  };
+  return { counter, loader };
+}
+
 describe("instance cache", () => {
   test("unchanged options reuse the cached instance", () => {
     const id = "/virtual/cache-same.php";
@@ -93,4 +103,58 @@ describe("streaming output", () => {
 
     await module.$dispose();
   });
+});
+
+describe("$reset", () => {
+  test("defers the re-boot to the next call", async () => {
+    const { counter, loader } = countingLoader();
+    const module = createPhpModule({
+      id: "/virtual/reset-lazy.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+      runtime: { loader },
+    });
+
+    // Cold: nothing to discard, and nothing worth booting yet.
+    await module.$reset();
+    expect(counter.boots).toBe(0);
+
+    await module.$ready();
+    expect(counter.boots).toBe(1);
+
+    // The old runtime is gone, but a new one is not paid for until it is needed.
+    await module.$reset();
+    expect(counter.boots).toBe(1);
+
+    expect(await module.$eval("return 1;")).toBe(1);
+    expect(counter.boots).toBe(2);
+
+    await module.$dispose();
+  }, 30_000);
+
+  test("keeps the module in the cache, unlike $dispose", async () => {
+    const id = "/virtual/reset-cache.php";
+    const module = moduleWith(id, "ignore");
+    await module.$ready();
+
+    await module.$reset();
+    expect(cache().has(id)).toBe(true);
+
+    await module.$dispose();
+    expect(cache().has(id)).toBe(false);
+  }, 30_000);
+
+  test("overlapping resets and disposes settle, and the module keeps working", async () => {
+    const module = moduleWith("/virtual/reset-overlap.php", "ignore");
+    await module.$ready();
+
+    // Neither call is serialised behind the other any more, so they must be
+    // safe to run against the same runtime at the same time.
+    await Promise.all([module.$reset(), module.$dispose(), module.$reset(), module.$dispose()]);
+
+    expect(await module.$eval("return 2;")).toBe(2);
+    await module.$dispose();
+  }, 30_000);
 });

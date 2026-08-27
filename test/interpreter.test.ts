@@ -17,6 +17,16 @@ async function withTempDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+/** A `loader` that counts how many times the wasm runtime was instantiated. */
+function countingLoader() {
+  const counter = { boots: 0 };
+  const loader = async () => {
+    counter.boots++;
+    return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
+  };
+  return { counter, loader };
+}
+
 describe("createInterpreter", () => {
   test(
     "runs a CLI invocation and reports stdout and exit code",
@@ -137,6 +147,72 @@ describe("createInterpreter", () => {
       } finally {
         await php.dispose();
       }
+    },
+    BOOT_MS,
+  );
+});
+
+describe("instances", () => {
+  test(
+    "concurrent cli() calls on one interpreter each get their own instance",
+    async () => {
+      const { counter, loader } = countingLoader();
+      const php = createInterpreter({ loader });
+      try {
+        const [a, b] = await Promise.all([
+          php.cli(["php", "-r", 'echo "a";']),
+          php.cli(["php", "-r", 'echo "b";']),
+        ]);
+        // Sharing one instance would hand the second call exit code -1 and no output.
+        expect([a.stdout, a.exitCode]).toEqual(["a", 0]);
+        expect([b.stdout, b.exitCode]).toEqual(["b", 0]);
+        expect(counter.boots).toBe(2);
+      } finally {
+        await php.dispose();
+      }
+    },
+    BOOT_MS,
+  );
+
+  test(
+    "ini and mounts given as options are re-applied to every fresh instance",
+    async () => {
+      await withTempDir(async (dir) => {
+        await writeFile(join(dir, "a.txt"), "mounted");
+        const php = createInterpreter({
+          ini: { memory_limit: "512M" },
+          mounts: [{ host: dir, at: "/m" }],
+        });
+        try {
+          const script = 'echo ini_get("memory_limit"), "|", file_get_contents("/m/a.txt");';
+          const first = await php.cli(["php", "-r", script]);
+          // cli() consumed that instance, so this call runs on a replacement.
+          const second = await php.cli(["php", "-r", script]);
+          expect(first.stdout).toBe("512M|mounted");
+          expect(second.stdout).toBe("512M|mounted");
+        } finally {
+          await php.dispose();
+        }
+      });
+    },
+    BOOT_MS,
+  );
+
+  test(
+    "options and later staging are applied in order, so staging can build on a mount",
+    async () => {
+      await withTempDir(async (dir) => {
+        const php = createInterpreter({ mounts: [{ host: dir, at: "/m" }] });
+        try {
+          // Writing into the mount only works if the mount was applied first.
+          await php.writeFile("/m/written.txt", "through the mount");
+          const result = await php.cli(["php", "-r", 'echo file_get_contents("/m/written.txt");']);
+          expect(result.stdout).toBe("through the mount");
+          expect(await Bun.file(join(dir, "written.txt")).text()).toBe("through the mount");
+        } finally {
+          await php.dispose();
+        }
+      });
     },
     BOOT_MS,
   );
