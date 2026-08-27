@@ -7,45 +7,30 @@ export { resolveProject, type PhpProject } from "./project";
 export { generateModule } from "./codegen";
 export { generateDts } from "./dts";
 export { PhpError, PhpFatalError, PhpParseError, PhpTimeoutError } from "./errors";
-export {
-  createInterpreter,
-  PhpInterpreter,
-  type PhpCliOptions,
-  type PhpCliResult,
-  type PhpMount,
-  type PhpRuntimeOptions,
-} from "./interpreter";
-export type { JournalOp } from "./journal";
+export { createInterpreter, PhpInterpreter } from "./interpreter";
 export type { IsolationReply, IsolationRequest } from "./isolation";
-export {
-  bootPhp,
-  nodeFsMountHandler,
-  PHP_VERSION,
-  PhpBuildNotInstalledError,
-  type PhpLoader,
-  type PhpLoaderModule,
-  type PhpRuntimeSource,
-  type PhpVersion,
-} from "./php-runtime";
-// Re-exported so reaching the interpreter through `$php()` does not force a
-// direct dependency on @php-wasm/universal.
+export { bootPhp, nodeFsMountHandler, PHP_VERSION, PhpBuildNotInstalledError } from "./php-runtime";
+// Re-exported so reaching the interpreter through `$php()` needs no direct dependency on @php-wasm/universal.
 export type { MountHandler, PHP, SpawnHandler } from "@php-wasm/universal";
 export type {
+  JournalOp,
   PhpArray,
+  PhpCliOptions,
+  PhpCliResult,
   PhpConstantMeta,
   PhpFunctionMeta,
+  PhpLoader,
+  PhpLoaderModule,
   PhpModuleApi,
   PhpModuleMeta,
+  PhpMount,
   PhpParamMeta,
   PhpPluginOptions,
+  PhpRuntimeOptions,
   PhpValue,
+  PhpVersion,
   StdoutMode,
 } from "./types";
 
-/**
- * A ready-made plugin instance.
- *
- * This is what `[serve.static] plugins = ["bun-php"]` picks up; use the
- * `phpPlugin()` factory when you need to pass options.
- */
+/** What `[serve.static] plugins = ["bun-php"]` picks up; use `phpPlugin()` to pass options. */
 export default phpPlugin();

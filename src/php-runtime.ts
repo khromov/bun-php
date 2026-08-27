@@ -1,39 +1,11 @@
-import { PHP, loadPHPRuntime } from "@php-wasm/universal";
-import type { MountHandler } from "@php-wasm/universal";
+import { PHP, loadPHPRuntime, setPhpIniEntries } from "@php-wasm/universal";
+import type { MountHandler, SpawnHandler } from "@php-wasm/universal";
+import { EventEmitter } from "node:events";
+import type { JournalOp, PhpLoaderModule, PhpRuntimeOptions, PhpVersion } from "./types";
 
-/**
- * The only module that touches `@php-wasm/*` directly.
- *
- * `@php-wasm/node-8-5` ships just the WebAssembly builds and a loader; the JS
- * API (`PHP`, `loadPHPRuntime`) lives in `@php-wasm/universal`. The convenience
- * adapter `@php-wasm/node` is deliberately not used: it statically imports
- * `fs-ext-extra-prebuilt`, a NAN native addon that throws at module-evaluation
- * time when its binding cannot load, and it depends on every per-version build
- * package. Going direct keeps the dependency tree pure JavaScript.
- */
-export const PHP_VERSION = "8.5";
+export const PHP_VERSION: PhpVersion = "8.5";
 
-/** Versions with a `@php-wasm/node-X-Y` build package. */
-export type PhpVersion = "8.0" | "8.1" | "8.2" | "8.3" | "8.4" | "8.5";
-
-/** What `@php-wasm/node-X-Y` exports; `loadPHPRuntime` takes it verbatim. */
-export type PhpLoaderModule = Parameters<typeof loadPHPRuntime>[0];
-
-/** Supply a build php-wasm has no package for, or pin the jspi/asyncify variant. */
-export type PhpLoader = () => Promise<PhpLoaderModule>;
-
-export interface PhpRuntimeSource {
-  /** Defaults to {@link PHP_VERSION}; anything else must be installed by the caller. */
-  phpVersion?: PhpVersion;
-  /** Takes precedence over `phpVersion`. */
-  loader?: PhpLoader;
-}
-
-/**
- * Only the default is a real dependency. Every other build is an optional peer:
- * bundling all of them would cost ~60 MB of wasm per version and undo the
- * pure-JavaScript dependency tree the direct `@php-wasm/universal` import buys.
- */
+// Only 8.5 is a real dependency: each build is tens of MB of wasm, so the rest are optional peers.
 const BUILD_PACKAGES: Record<PhpVersion, string> = {
   "8.0": "@php-wasm/node-8-0",
   "8.1": "@php-wasm/node-8-1",
@@ -43,7 +15,6 @@ const BUILD_PACKAGES: Record<PhpVersion, string> = {
   "8.5": "@php-wasm/node-8-5",
 };
 
-/** A build package is missing far more often than it is broken, so say which one. */
 export class PhpBuildNotInstalledError extends Error {
   override readonly name = "PhpBuildNotInstalledError";
   constructor(
@@ -67,28 +38,65 @@ async function loadBuild(phpVersion: PhpVersion): Promise<PhpLoaderModule> {
   } catch (err) {
     throw new PhpBuildNotInstalledError(phpVersion, packageName, err);
   }
-  // Every build package picks jspi over asyncify itself; `loader` is the way past that.
   return build.getPHPLoaderModule();
 }
 
-/** Instantiate a fresh php-wasm runtime and return its id. */
-export async function createRuntimeId(source: PhpRuntimeSource = {}): Promise<number> {
-  const load = source.loader ?? (() => loadBuild(source.phpVersion ?? PHP_VERSION));
-  return loadPHPRuntime(await load());
+/** Boot a configured interpreter: spawn handler first, then every journal op in order. */
+export async function bootPhp(
+  options: PhpRuntimeOptions = {},
+  ops: readonly JournalOp[] = [],
+): Promise<PHP> {
+  const load = options.loader ?? (() => loadBuild(options.phpVersion ?? PHP_VERSION));
+  const php = new PHP(await loadPHPRuntime(await load()));
+  if (options.spawn) {
+    await php.setSpawnHandler(options.spawn === "refuse" ? refuseSpawn : options.spawn);
+  }
+  for (const op of ops) await applyOp(php, op);
+  return php;
 }
 
-/** Boot a new PHP interpreter. */
-export async function bootPhp(source: PhpRuntimeSource = {}): Promise<PHP> {
-  return new PHP(await createRuntimeId(source));
+/** The `ini` and `mounts` options as journal ops, so one mechanism configures every instance. */
+export function optionOps(options: PhpRuntimeOptions): JournalOp[] {
+  const ops: JournalOp[] = [];
+  if (options.ini) ops.push({ kind: "ini", entries: options.ini });
+  for (const { host, at } of options.mounts ?? []) ops.push({ kind: "mount", host, at });
+  return ops;
+}
+
+export function writeFileOp(path: string, data: string | Uint8Array): JournalOp {
+  if (typeof data === "string") return { kind: "writeFile", path, data, encoding: "utf8" };
+  return {
+    kind: "writeFile",
+    path,
+    data: Buffer.from(data).toString("base64"),
+    encoding: "base64",
+  };
+}
+
+export async function applyOp(php: PHP, op: JournalOp): Promise<void> {
+  switch (op.kind) {
+    case "mount":
+      php.mkdir(op.at);
+      await php.mount(op.at, nodeFsMountHandler(op.host));
+      return;
+    case "writeFile":
+      php.writeFile(
+        op.path,
+        op.encoding === "base64" ? new Uint8Array(Buffer.from(op.data, "base64")) : op.data,
+      );
+      return;
+    case "mkdir":
+      php.mkdir(op.path);
+      return;
+    case "ini":
+      await setPhpIniEntries(php, op.entries);
+      return;
+  }
 }
 
 /**
- * Mount a real host directory into the virtual filesystem.
- *
- * `@php-wasm/node` ships `createNodeFsMountHandler` for this, but that package
- * is avoided here (see above), so the handler is implemented directly against
- * the Emscripten filesystem. NODEFS is a live view: files written on the host
- * after mounting are visible to PHP straight away.
+ * A live view of a host directory. `@php-wasm/node` ships one of these, but that package drags
+ * in a native addon that throws when its binding cannot load.
  */
 export function nodeFsMountHandler(hostPath: string): MountHandler {
   return (_php, FS, mountPoint) => {
@@ -101,3 +109,16 @@ export function nodeFsMountHandler(hostPath: string): MountHandler {
     return () => fs.unmount(mountPoint);
   };
 }
+
+// Answers every spawn with exit code 1 straight away; an unanswered spawn hangs the wasm bridge.
+const refuseSpawn: SpawnHandler = () => {
+  const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = { write() {}, end() {} };
+  queueMicrotask(() => {
+    child.emit("exit", 1);
+    child.emit("close", 1);
+  });
+  return child as unknown as ReturnType<SpawnHandler>;
+};

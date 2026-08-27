@@ -24,13 +24,7 @@ export class PhpError extends Error {
   }
 }
 
-/**
- * A call outlived its deadline.
- *
- * The PHP work is **not** stopped — php-wasm offers no way to interrupt a
- * running request — so this hands control back to the caller and retires the
- * interpreter rather than pretending to have cancelled anything.
- */
+/** A call outlived its deadline. In-process the PHP work is not stopped; php-wasm cannot interrupt it. */
 export class PhpTimeoutError extends Error {
   override readonly name = "PhpTimeoutError";
   constructor(

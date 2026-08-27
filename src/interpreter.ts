@@ -1,111 +1,25 @@
-import { setPhpIniEntries } from "@php-wasm/universal";
-import type { PHP, SpawnHandler, StreamedPHPResponse } from "@php-wasm/universal";
-import { EventEmitter } from "node:events";
+import type { PHP } from "@php-wasm/universal";
 import { PhpTimeoutError } from "./errors";
-import { applyJournalOp, writeFileOp, type JournalOp } from "./journal";
 import { runIsolatedCli, type IsolationRequest } from "./isolation";
-import { bootPhp, nodeFsMountHandler, type PhpRuntimeSource } from "./php-runtime";
-
-export interface PhpMount {
-  /** Absolute path on the host. */
-  host: string;
-  /** Where it appears inside the virtual filesystem. */
-  at: string;
-}
-
-export interface PhpRuntimeOptions extends PhpRuntimeSource {
-  /** `php.ini` entries applied once, before the first call. */
-  ini?: Record<string, string | number>;
-  /**
-   * How PHP's process functions behave. `"refuse"` answers every spawn with an
-   * immediate non-zero exit, which is what a tool probing for a terminal needs:
-   * leaving a spawn unanswered hangs the wasm bridge forever, and a real
-   * handler hands guest code host execution.
-   */
-  spawn?: SpawnHandler | "refuse";
-  /** Host directories to mount before the first call. */
-  mounts?: readonly PhpMount[];
-  /** Default deadline for {@link PhpInterpreter.cli}; see its caveat. */
-  timeoutMs?: number;
-  /**
-   * `"process"` runs every `cli()` in a child that exits afterwards, which is
-   * what makes `timeoutMs` a real SIGKILL, lets the OS reclaim the wasm heap
-   * (in-process it never returns to baseline), and lets calls overlap. The
-   * trade: options must survive JSON — see the README.
-   */
-  isolation?: "process";
-}
-
-export interface PhpCliOptions {
-  env?: Record<string, string>;
-  cwd?: string;
-  /** Overrides the interpreter's own `timeoutMs`; `0` disables it. */
-  timeoutMs?: number;
-}
-
-export interface PhpCliResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-function refusingSpawnHandler(): SpawnHandler {
-  return () => {
-    const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
-    child.stdout = new EventEmitter();
-    child.stderr = new EventEmitter();
-    child.stdin = { write() {}, end() {} };
-    queueMicrotask(() => {
-      child.emit("exit", 1);
-      child.emit("close", 1);
-    });
-    return child as unknown as ReturnType<SpawnHandler>;
-  };
-}
+import { applyOp, bootPhp, optionOps, writeFileOp } from "./php-runtime";
+import type { JournalOp, PhpCliOptions, PhpCliResult, PhpRuntimeOptions } from "./types";
 
 /**
- * Apply the options that have to be in place before PHP first runs.
- *
- * Shared with `runtime.ts` so an imported `.php` module and a bare interpreter
- * cannot end up configured differently.
- */
-export async function applyRuntimeOptions(php: PHP, options: PhpRuntimeOptions): Promise<void> {
-  if (options.spawn) {
-    const handler = options.spawn === "refuse" ? refusingSpawnHandler() : options.spawn;
-    await php.setSpawnHandler(handler);
-  }
-  if (options.ini) await setPhpIniEntries(php, options.ini);
-  for (const mount of options.mounts ?? []) {
-    php.mkdir(mount.at);
-    await php.mount(mount.at, nodeFsMountHandler(mount.host));
-  }
-}
-
-/**
- * A configured PHP interpreter with no `.php` import behind it — the seam for
- * driving PHP directly, since the plugin bakes its options into the generated
- * module at load time and cannot express a per-call mount or argument.
- * In-process calls never overlap (the wasm holds the thread); `isolation:
- * "process"` is what buys parallelism.
+ * A configured interpreter with no `.php` import behind it, for driving PHP tools directly.
+ * In-process calls never overlap (the wasm holds the thread); `isolation: "process"` buys parallelism.
  */
 export class PhpInterpreter {
-  #php: PHP | null = null;
-  #booting: Promise<PHP> | null = null;
-  /** A timed-out in-process interpreter is never handed out again; see `#deadline`. */
+  /** The booted (or booting) instance; `null` once `cli()` has taken it. */
+  #instance: Promise<PHP> | null = null;
   #retired = false;
-  /**
-   * `PHP.cli()` calls `exit()` on its instance when the command finishes, and a
-   * second call on the same one returns exit code -1 with no output and no
-   * error. So the instance is replaced between commands, and the journal is
-   * replayed onto the replacement.
-   */
-  #spent = false;
-  readonly #journal: JournalOp[] = [];
+  readonly #journal: JournalOp[];
 
-  constructor(private readonly options: PhpRuntimeOptions = {}) {
+  constructor(
+    private readonly options: PhpRuntimeOptions = {},
+    journal: readonly JournalOp[] = [],
+  ) {
     if (options.isolation === "process") {
-      // A closure cannot cross the JSON boundary, and refusing it here beats a
-      // child that silently runs without it.
+      // Functions cannot cross the JSON boundary to the child.
       if (options.loader) {
         throw new TypeError(
           "isolation: 'process' cannot ship a loader function to the child; use phpVersion instead",
@@ -117,12 +31,10 @@ export class PhpInterpreter {
         );
       }
     }
+    this.#journal = [...optionOps(options), ...journal];
   }
 
-  /**
-   * Boot lazily, and only once even under concurrent first calls; under
-   * `isolation: "process"` there is no in-process instance to hand back.
-   */
+  /** The in-process instance, booted on first use. */
   php(): Promise<PHP> {
     if (this.options.isolation === "process") {
       return Promise.reject(
@@ -131,63 +43,43 @@ export class PhpInterpreter {
         ),
       );
     }
-    if (this.#php) return Promise.resolve(this.#php);
-    this.#booting ??= this.#boot();
-    return this.#booting;
+    return (this.#instance ??= bootPhp(this.options, this.#journal));
   }
 
-  /** Whether an in-process call has timed out on this interpreter, retiring it. */
+  /** Whether an in-process call timed out here; the abandoned request still owns that instance. */
   get retired(): boolean {
     return this.#retired;
   }
 
-  async #boot(): Promise<PHP> {
-    const php = await bootPhp(this.options);
-    await applyRuntimeOptions(php, this.options);
-    for (const op of this.#journal) await applyJournalOp(php, op);
-    this.#php = php;
-    return php;
+  mount(host: string, at: string): Promise<void> {
+    return this.#apply({ kind: "mount", host, at });
   }
 
-  /**
-   * Record one step and, in-process, apply it to the interpreter running now.
-   * Isolated interpreters record only: the child replays the journal at boot.
-   */
-  async replay(op: JournalOp): Promise<void> {
+  ini(entries: Record<string, string | number>): Promise<void> {
+    return this.#apply({ kind: "ini", entries });
+  }
+
+  writeFile(path: string, data: string | Uint8Array): Promise<void> {
+    return this.#apply(writeFileOp(path, data));
+  }
+
+  mkdir(path: string): Promise<void> {
+    return this.#apply({ kind: "mkdir", path });
+  }
+
+  /** Record one step and, in-process, apply it now; an isolation child replays the journal at boot. */
+  async #apply(op: JournalOp): Promise<void> {
     if (this.options.isolation === "process") {
       this.#journal.push(op);
       return;
     }
-    // Booting first, because a boot replays the journal — recording this op
-    // beforehand would run it twice on the very first call.
+    // Boot before recording: a boot replays the journal, so recording first would run the op twice.
     const php = await this.php();
     this.#journal.push(op);
-    await applyJournalOp(php, op);
+    await applyOp(php, op);
   }
 
-  /** Mount a host directory after boot, for a path only known per call. */
-  async mount(host: string, at: string): Promise<void> {
-    await this.replay({ kind: "mount", host, at });
-  }
-
-  async ini(entries: Record<string, string | number>): Promise<void> {
-    await this.replay({ kind: "ini", entries });
-  }
-
-  async writeFile(path: string, data: string | Uint8Array): Promise<void> {
-    await this.replay(writeFileOp(path, data));
-  }
-
-  async mkdir(path: string): Promise<void> {
-    await this.replay({ kind: "mkdir", path });
-  }
-
-  /**
-   * Run PHP as a command line, the way `php script.php --flag` runs it.
-   *
-   * `argv[0]` is the binary name, so the script is `argv[1]`. The whole output
-   * is buffered: a CLI tool's stdout is its result, not something to stream.
-   */
+  /** Run PHP as `php script.php --flag` would; `argv[0]` is the binary name. Output is buffered whole. */
   async cli(argv: string[], options: PhpCliOptions = {}): Promise<PhpCliResult> {
     const timeoutMs = options.timeoutMs ?? this.options.timeoutMs ?? 0;
     if (this.options.isolation === "process") {
@@ -198,16 +90,11 @@ export class PhpInterpreter {
   }
 
   #isolationRequest(argv: string[], options: PhpCliOptions): IsolationRequest {
-    const { phpVersion, ini, spawn, mounts } = this.options;
+    const { phpVersion, spawn } = this.options;
     return {
-      options: {
-        phpVersion,
-        ini,
-        // The constructor refused a function, so only "refuse" can be left.
-        spawn: spawn === "refuse" ? spawn : undefined,
-        mounts,
-      },
-      // Snapshot, so a concurrent replay() cannot mutate a request in flight.
+      // The constructor refused a function, so only "refuse" can be left.
+      options: { phpVersion, spawn: spawn === "refuse" ? spawn : undefined },
+      // A snapshot, so a concurrent mount() cannot change a request in flight.
       journal: [...this.#journal],
       argv,
       env: options.env,
@@ -216,11 +103,11 @@ export class PhpInterpreter {
   }
 
   async #cli(argv: string[], options: PhpCliOptions): Promise<PhpCliResult> {
-    if (this.#spent) await this.#replaceInstance();
-    this.#spent = true;
-    const response: StreamedPHPResponse = await (
-      await this.php()
-    ).cli(argv, { env: options.env, cwd: options.cwd });
+    const instance = this.php();
+    // `PHP.cli()` exits its instance when the command ends, so forget it now and let the next call boot afresh.
+    this.#instance = null;
+    const php = await instance;
+    const response = await php.cli(argv, { env: options.env, cwd: options.cwd });
     const [stdout, stderr, exitCode] = await Promise.all([
       response.stdoutText,
       response.stderrText,
@@ -229,11 +116,7 @@ export class PhpInterpreter {
     return { stdout, stderr, exitCode };
   }
 
-  /**
-   * php-wasm cannot interrupt a running request, so this bounds *waiting*,
-   * never the work. The interpreter is retired rather than reused, since the
-   * abandoned request is still using it.
-   */
+  // php-wasm cannot interrupt a request, so this bounds waiting only; the abandoned request keeps running.
   async #deadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expiry = new Promise<never>((_, reject) => {
@@ -247,8 +130,7 @@ export class PhpInterpreter {
         );
       }, timeoutMs);
     });
-    // The loser is left to settle on its own: rejecting it early would surface
-    // as an unhandled rejection once the abandoned request finally finishes.
+    // The loser settling later must not surface as an unhandled rejection.
     void work.catch(() => {});
     try {
       return await Promise.race([work, expiry]);
@@ -257,21 +139,11 @@ export class PhpInterpreter {
     }
   }
 
-  /** Drop the spent instance so `php()` boots a replacement and replays the journal. */
-  async #replaceInstance(): Promise<void> {
-    this.#spent = false;
-    const php = this.#php;
-    this.#php = null;
-    this.#booting = null;
-    php?.exit();
-  }
-
-  /** Shut the interpreter down. A disposed interpreter re-boots on next use. */
+  /** Shut down; a disposed interpreter re-boots on next use. */
   async dispose(): Promise<void> {
-    const booting = this.#booting;
-    this.#booting = null;
-    const php = this.#php ?? (booting ? await booting.catch(() => null) : null);
-    this.#php = null;
+    const instance = this.#instance;
+    this.#instance = null;
+    const php = await instance?.catch(() => null);
     php?.exit();
   }
 }

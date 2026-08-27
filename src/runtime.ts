@@ -1,11 +1,17 @@
 import type { PHP } from "@php-wasm/universal";
-import { PhpFatalError } from "./errors";
-import { buildCallScript, EnvelopeSplitter, encodeArgs, unwrapEnvelope } from "./marshal";
-import { bootPhp, nodeFsMountHandler } from "./php-runtime";
-import { applyRuntimeOptions, type PhpRuntimeOptions } from "./interpreter";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import type { PhpModuleApi, PhpModuleMeta, StdoutMode } from "./types";
+import { PhpFatalError } from "./errors";
+import { PhpInterpreter } from "./interpreter";
+import { buildCallScript, EnvelopeSplitter, encodeArgs, unwrapEnvelope } from "./marshal";
+import { writeFileOp } from "./php-runtime";
+import type {
+  JournalOp,
+  PhpModuleApi,
+  PhpModuleMeta,
+  PhpRuntimeOptions,
+  StdoutMode,
+} from "./types";
 
 export interface CreatePhpModuleOptions {
   /** Absolute path of the source file; doubles as the cache key. */
@@ -20,133 +26,71 @@ export interface CreatePhpModuleOptions {
   root?: string | null;
   /** Composer autoloader to require before the module, if any. */
   autoload?: string | null;
-  /** PHP version, ini, spawn handling and extra mounts. */
   runtime?: PhpRuntimeOptions;
 }
 
-/**
- * Identity of an interpreter's configuration, for the cache comparison below.
- *
- * Functions carry no stable serialisation, so `loader` and `spawn` fall back to
- * reference identity — a caller passing a fresh closure each time gets a fresh
- * interpreter, which is the safe direction to be wrong in.
- */
-function runtimeKey(options: PhpRuntimeOptions | undefined): string {
-  if (!options) return "";
-  const { loader, spawn, ...rest } = options;
-  return JSON.stringify(rest);
-}
-
-/**
- * Interpreters are cached on `globalThis` rather than in a module-level
- * variable so they survive `bun --hot` soft reloads, which reset the module
- * registry (and therefore re-run the plugin's `onLoad`) on every save.
- */
-const CACHE_KEY = "__bunPhpInstances";
-
-function instanceCache(): Map<string, PhpInstance> {
-  const globals = globalThis as Record<string, unknown>;
-  const existing = globals[CACHE_KEY] as Map<string, PhpInstance> | undefined;
-  if (existing) return existing;
-  const created = new Map<string, PhpInstance>();
-  globals[CACHE_KEY] = created;
-  return created;
+// Cached on globalThis, not in a module variable: `bun --hot` resets the module registry on every
+// save and would otherwise leak an interpreter per edit.
+function cache(): Map<string, PhpInstance> {
+  const globals = globalThis as { __bunPhpInstances?: Map<string, PhpInstance> };
+  return (globals.__bunPhpInstances ??= new Map());
 }
 
 class PhpInstance {
-  #php: PHP | null = null;
-  #booting: Promise<PHP> | null = null;
+  readonly #interpreter: PhpInterpreter;
   #captured = "";
-  /** Calls currently executing, so lifecycle methods can wait them out. */
-  readonly #inflight = new Set<Promise<unknown>>();
-  /** Serialises reset/dispose so they cannot interleave with each other. */
-  #lifecycle: Promise<unknown> = Promise.resolve();
+  /** Calls in progress, so reset/dispose can wait them out. */
+  readonly #running = new Set<Promise<unknown>>();
 
   constructor(
     readonly id: string,
-    readonly source: string,
+    readonly key: string,
     readonly stdout: StdoutMode,
-    readonly root: string | null,
     readonly autoload: string | null,
-    readonly runtime: PhpRuntimeOptions = {},
-  ) {}
-
-  /** Boot lazily, and only once even under concurrent first calls. */
-  async php(): Promise<PHP> {
-    if (this.#php) return this.#php;
-    // A disposed instance re-boots on first use; put it back in the cache so
-    // --hot teardown can find it again (unless a newer instance owns the id).
-    const cache = instanceCache();
-    if (!cache.has(this.id)) cache.set(this.id, this);
-    this.#booting ??= this.#boot();
-    return this.#booting;
+    readonly runtime: PhpRuntimeOptions,
+    root: string | null,
+    source: string,
+  ) {
+    // Mounting the directory gives a live view of the host, so sibling requires, `__DIR__` and Composer
+    // work; writing the inlined source is the fallback for a bundle running somewhere else.
+    const setup: JournalOp[] =
+      root && existsSync(root)
+        ? [{ kind: "mount", host: root, at: root }]
+        : [{ kind: "mkdir", path: dirname(id) }, writeFileOp(id, source)];
+    this.#interpreter = new PhpInterpreter(runtime, setup);
   }
 
-  #serialize<T>(op: () => Promise<T>): Promise<T> {
-    const task = this.#lifecycle.then(op, op);
-    this.#lifecycle = task.then(
-      () => undefined,
-      () => undefined,
-    );
-    return task;
+  php(): Promise<PHP> {
+    // A disposed instance re-boots on first use, so put it back where --hot teardown can find it
+    // (unless a newer instance owns the id).
+    if (!cache().has(this.id)) cache().set(this.id, this);
+    return this.#interpreter.php();
   }
 
-  async #boot(): Promise<PHP> {
-    const php = await bootPhp(this.runtime);
-    await applyRuntimeOptions(php, this.runtime);
-    await this.#populate(php);
-    this.#php = php;
-    return php;
-  }
-
-  /**
-   * Make the PHP file reachable from inside the interpreter.
-   *
-   * Mounting the project directory is preferred: it is a live view of the host
-   * filesystem, so sibling `require`s, `__DIR__` and Composer's vendor tree all
-   * resolve. When the directory is not on disk — a bundle running elsewhere —
-   * the source inlined at build time is written instead, which keeps
-   * single-file modules working.
-   */
-  async #populate(php: PHP): Promise<void> {
-    if (this.root && existsSync(this.root)) {
-      php.mkdir(this.root);
-      await php.mount(this.root, nodeFsMountHandler(this.root));
-      return;
-    }
-    php.mkdir(dirname(this.id));
-    php.writeFile(this.id, this.source);
-  }
-
-  async run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
+  run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
     const task = this.#run(expression, label, sink);
-    this.#inflight.add(task);
-    const settle = () => this.#inflight.delete(task);
-    task.then(settle, settle);
+    this.#running.add(task);
+    const done = () => this.#running.delete(task);
+    task.then(done, done);
     return task;
   }
 
   async #run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
     const php = await this.php();
-    const script = buildCallScript(this.id, expression, this.autoload);
-
-    const response = await php.runStream({ code: script });
-    // Read stdout as it is produced rather than awaiting `stdoutText`, so that
-    // a slow script's output appears while it is still running. The splitter
-    // keeps the envelope out of what gets emitted.
-    // A sink takes the output instead of this instance's stdout mode, and gets
-    // it chunk by chunk — that is what `BunPHP.capture` collects.
-    const emit = sink ?? ((text: string) => this.#emit(text));
+    const response = await php.runStream({
+      code: buildCallScript(this.id, expression, this.autoload),
+    });
+    // A sink takes this call's output instead of the module's stdout mode; that is what `BunPHP.capture` collects.
+    const emit = sink ?? ((text: string) => this.#write(text));
     const splitter = new EnvelopeSplitter(emit);
     const decoder = new TextDecoder();
     const reader = response.stdout.getReader();
 
+    // Read chunk by chunk so a slow script's output appears while it is still running.
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        // `stream: true` so a multi-byte character split across two chunks is
-        // decoded once both halves have arrived.
         splitter.push(decoder.decode(value, { stream: true }));
       }
     } finally {
@@ -155,12 +99,10 @@ class PhpInstance {
 
     splitter.push(decoder.decode());
     const envelope = splitter.end();
-    // Only buffers the script itself opened and left open reach the envelope
-    // now; everything else has already been emitted above.
+    // Only buffers the script opened and left open still arrive here.
     if (envelope?.out) emit(envelope.out);
 
     const [exitCode, stderr] = await Promise.all([response.exitCode, response.stderrText]);
-
     if (!envelope) {
       const detail = [stderr.trim(), splitter.tail.trim()].filter(Boolean).join("\n");
       throw new PhpFatalError(
@@ -169,12 +111,10 @@ class PhpInstance {
         0,
       );
     }
-
     return unwrapEnvelope(envelope, label);
   }
 
-  #emit(text: string): void {
-    if (!text) return;
+  #write(text: string): void {
     if (this.stdout === "inherit") process.stdout.write(text);
     else if (this.stdout === "capture") this.#captured += text;
   }
@@ -185,143 +125,77 @@ class PhpInstance {
     return value;
   }
 
-  /**
-   * Tear down the interpreter and boot a fresh one, discarding every trace of
-   * PHP state — the virtual filesystem included, which is why this boots a new
-   * runtime instead of using php-wasm's `hotSwapPHPRuntime` (a hot swap copies
-   * the old MEMFS into the replacement).
-   */
-  reset(): Promise<void> {
-    return this.#serialize(() => this.#reset());
-  }
-
-  async #reset(): Promise<void> {
+  /** Discard all PHP state, the virtual filesystem included; the next call boots afresh. */
+  async reset(): Promise<void> {
     this.#captured = "";
-    if (!this.#php && !this.#booting) return; // Never booted: nothing to discard.
-    const php = this.#php ?? (await this.#booting!.catch(() => null));
-    // Let in-flight calls finish before the runtime under them is torn down.
-    while (this.#inflight.size > 0) {
-      await Promise.allSettled(this.#inflight);
-    }
-    if (php && this.#php === php) {
-      this.#php = null;
-      this.#booting = null;
-      php.exit();
-    }
-    await this.php();
+    await this.#drain();
+    await this.#interpreter.dispose();
   }
 
-  /**
-   * Shut the interpreter down and drop this instance from the cache.
-   *
-   * A boot still in flight is awaited so its runtime cannot leak (or re-arm
-   * `#php` after the fact), and the cache entry is only removed while it still
-   * points at this instance, so disposing a stale `--hot` handle does not
-   * evict its replacement.
-   */
-  dispose(): Promise<void> {
-    return this.#serialize(() => this.#dispose());
+  async dispose(): Promise<void> {
+    // Only evict while the entry is still this instance, so a stale --hot handle cannot evict its replacement.
+    if (cache().get(this.id) === this) cache().delete(this.id);
+    await this.#drain();
+    await this.#interpreter.dispose();
   }
 
-  async #dispose(): Promise<void> {
-    const cache = instanceCache();
-    if (cache.get(this.id) === this) cache.delete(this.id);
-    const booting = this.#booting;
-    this.#booting = null;
-    const php = this.#php ?? (booting ? await booting.catch(() => null) : null);
-    while (this.#inflight.size > 0) {
-      await Promise.allSettled(this.#inflight);
-    }
-    this.#php = null;
-    php?.exit();
+  // Let in-flight calls finish before the runtime under them goes away.
+  async #drain(): Promise<void> {
+    while (this.#running.size > 0) await Promise.allSettled(this.#running);
   }
 }
 
-/**
- * Build the object a generated `.php` module exports.
- *
- * Each PHP function becomes an async JS function. The interpreter boots on the
- * first call, not at import time, so importing a `.php` file stays cheap.
- */
+/** The object a generated `.php` module exports. The interpreter boots on the first call, not at import. */
 export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
   const { id, source, functions, meta } = options;
   const stdout = options.stdout ?? "inherit";
   const root = options.root ?? null;
   const autoload = options.autoload ?? null;
   const runtime = options.runtime ?? {};
-  // The imported-module path runs many small calls against one live instance,
-  // which is the opposite of a child that exits per call; a mode that cannot
-  // apply must fail loudly rather than quietly run in-process.
+  // A module makes many small calls against one live instance, the opposite of a child that exits per call.
   if (runtime.isolation) {
     throw new TypeError(
       "isolation is not supported for imported .php modules; use createInterpreter",
     );
   }
 
-  const cache = instanceCache();
-  let instance = cache.get(id);
-  // A changed source (the file was edited under --hot) or changed plugin
-  // options mean the cached interpreter no longer matches; rebuild it. The
-  // runtime options belong here too, or asking for a different PHP version
-  // silently hands back an interpreter running the old one.
-  if (
-    instance &&
-    (instance.source !== source ||
-      instance.stdout !== stdout ||
-      instance.root !== root ||
-      instance.autoload !== autoload ||
-      runtimeKey(instance.runtime) !== runtimeKey(runtime) ||
-      instance.runtime.loader !== runtime.loader ||
-      instance.runtime.spawn !== runtime.spawn)
-  ) {
-    void instance.dispose();
-    instance = undefined;
-  }
-  if (!instance) {
-    instance = new PhpInstance(id, source, stdout, root, autoload, runtime);
-    cache.set(id, instance);
-  }
-  const live = instance;
+  // Everything that decides which interpreter to boot; `loader` and `spawn` are compared by identity.
+  const { loader, spawn, ...serialisable } = runtime;
+  const key = JSON.stringify({ source, stdout, root, autoload, runtime: serialisable });
 
-  const api: PhpModuleApi = {
-    async call(name: string, args: readonly unknown[]): Promise<any> {
-      const phpName = functions[name] ?? name;
-      const expression = `\\${phpName}(${encodeArgs(args, phpName)})`;
-      return live.run(expression, phpName);
-    },
-    async $ready(): Promise<void> {
-      await live.php();
-    },
-    async $reset(): Promise<void> {
-      await live.reset();
-    },
-    async $dispose(): Promise<void> {
-      await live.dispose();
-    },
-    async $eval(code: string, onOutput?: (text: string) => void): Promise<any> {
-      // The newline keeps a trailing `//` or `#` comment in `code` from
-      // swallowing the closing brace.
-      return live.run(`(static function () { ${code}\n})()`, "$eval", onOutput);
-    },
-    async $php(): Promise<PHP> {
-      return live.php();
-    },
-    $output(): string {
-      return live.takeOutput();
-    },
-    $meta: meta,
+  const cached = cache().get(id);
+  const sameConfig =
+    cached?.key === key && cached.runtime.loader === loader && cached.runtime.spawn === spawn;
+  if (cached && !sameConfig) void cached.dispose();
+  const instance =
+    cached && sameConfig
+      ? cached
+      : new PhpInstance(id, key, stdout, autoload, runtime, root, source);
+  cache().set(id, instance);
+
+  // Async so an argument that cannot be encoded rejects rather than throws.
+  const call = async (name: string, args: readonly unknown[]): Promise<unknown> => {
+    const phpName = functions[name] ?? name;
+    return instance.run(`\\${phpName}(${encodeArgs(args, phpName)})`, phpName);
   };
 
-  // Expose every PHP function on the default export too. `Object.hasOwn`
-  // rather than `in`: a PHP function named `toString` or `constructor` must
-  // shadow `Object.prototype`, not be skipped because of it.
-  for (const exportName of Object.keys(functions)) {
-    if (Object.hasOwn(api, exportName)) continue;
-    Object.defineProperty(api, exportName, {
-      value: (...args: unknown[]) => api.call(exportName, args),
-      enumerable: true,
-    });
-  }
-
-  return api;
+  return {
+    // Every PHP function on the default export too. Spread defines own properties, so a PHP
+    // function named `toString` shadows Object.prototype instead of being skipped.
+    ...Object.fromEntries(
+      Object.keys(functions).map((name) => [name, (...args: unknown[]) => call(name, args)]),
+    ),
+    call,
+    $ready: async () => {
+      await instance.php();
+    },
+    $reset: () => instance.reset(),
+    $dispose: () => instance.dispose(),
+    // The newline keeps a trailing `//` or `#` comment in `code` from swallowing the closing brace.
+    $eval: (code, onOutput) =>
+      instance.run(`(static function () { ${code}\n})()`, "$eval", onOutput),
+    $php: () => instance.php(),
+    $output: () => instance.takeOutput(),
+    $meta: meta,
+  };
 }

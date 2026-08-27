@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { decodeOutput, encodeArgs, encodeValue, EnvelopeSplitter, SENTINEL } from "../src/marshal";
+import { encodeArgs, encodeValue, EnvelopeSplitter, SENTINEL } from "../src/marshal";
+
+/** Split a complete stdout string the way the runtime splits a stream. */
+function decodeOutput(stdout: string) {
+  let out = "";
+  const splitter = new EnvelopeSplitter((text) => {
+    out += text;
+  });
+  splitter.push(stdout);
+  const envelope = splitter.end();
+  return { out, envelope };
+}
 
 describe("encodeArgs", () => {
   test("drops trailing undefined so PHP defaults apply", () => {
