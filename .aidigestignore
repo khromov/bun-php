@@ -1,0 +1,10 @@
+test/fixtures/_.php.d.ts
+demos/php/_.php.d.ts
+demos/images/
+_.png
+_.zip
+CHANGELOG.md
+.release-please-manifest.json
+release-please-config.json
+.claude/
+.mcp.json
