@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/images/bun-php.png" alt="bun-php" width="220">
+</p>
+
 # 🐘 bun-php
 
 Now you can finally run PHP files in Bun! Import a `.php` file and bun-php turns its functions into async,
