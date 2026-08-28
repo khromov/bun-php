@@ -92,6 +92,14 @@ mkdir+writeFile fallback instead of mounting — a `require_once` of a host path
 filesystem is an `E_COMPILE_ERROR` on _every_ call, not just the first. An explicitly configured
 `autoload: "<path>"` still survives `mount: false`; only detection is switched off.
 
+**Short tags are pinned off, which is why nothing has to keep the parser and the runtime in step.**
+`PINNED_INI` in `php-runtime.ts` is applied by `bootPhp` _after_ the journal, so no op can outrank it, and
+php-parser's own default already matches — no `lexer` options, no invariant to remember. PHP's built-in
+default is on only because no `php.ini` ships with the wasm builds, and that disagreement made a `<?` file
+export nothing while the runtime happily ran it. `warnIfPinned` logs rather than throws when someone sets
+it, because a silently-ignored option is worse than a noisy one. `<?=` is unaffected: it has been
+unconditional since PHP 5.4.
+
 **One journal configures every instance.** A `JournalOp` (`php-runtime.ts`) is plain data: mount, mkdir,
 writeFile, ini. `PhpInterpreter` turns its `ini`/`mounts` options into journal ops at construction and
 `bootPhp(options, ops)` replays them onto every fresh instance, so there is no separate "apply options" step
@@ -190,10 +198,8 @@ it. `tokenGetAll` has no eval mode (the `mode_eval` lexer option does not reach 
 `<?php ` prefix to start the lexer in code mode, and a `<` token immediately followed by `?` is what marks a
 snippet that meant to open with markup — no valid PHP puts those two adjacent. That makes `inline.ts` the
 second consumer of php-parser after `parse.ts`; do not hand-roll the scan back. `asClosureBody` is exported
-so `test/inline.test.ts` can unit-test the rules without booting wasm. Both Engines pass
-`lexer: { short_tags: true }` (the option is `short_tags`, not `short_open_tag`) because the php-wasm build
-ships PHP's built-in `short_open_tag=On`: with the parser disagreeing, a `<?` file exported nothing and a
-`<?` snippet got a `<?php ` re-entry appended while PHP was already in code mode.
+so `test/inline.test.ts` can unit-test the rules without booting wasm, and its one `OPEN_TAG` pattern does
+both the test and the strip so the two cannot disagree.
 
 **Aliasing has one source of truth.** `bindingNameFor` (exported from `codegen.ts`) decides the local binding
 for a PHP name, and `exportLines` turns that into either a direct export or an alias plus re-export;

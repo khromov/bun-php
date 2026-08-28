@@ -49,12 +49,7 @@ function tokenName(token: string | string[]): string {
  */
 function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
   // The Engine constructor mutates its options object, so build a fresh one each time.
-  // Short tags on, because the interpreter that runs the snippet has them on: read as markup instead,
-  // a `<?` snippet gets a `<?php ` re-entry appended while PHP is already in code mode.
-  const engine = new Engine({
-    parser: { suppressErrors: true, version: 805 },
-    lexer: { short_tags: true },
-  });
+  const engine = new Engine({ parser: { suppressErrors: true, version: 805 } });
   const tokens = engine.tokenGetAll(`<?php ${code}`) as (string | string[])[];
 
   let inCode = true;
@@ -78,10 +73,13 @@ function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
  * so that re-entry prints nothing.
  */
 export function asClosureBody(code: string): string {
+  // One pattern for both the test and the strip, so they cannot disagree. `<?PHP` is as valid as
+  // `<?php`; a bare `<?` is not a tag at all, because short tags are pinned off.
+  const OPEN_TAG = /^\s*<\?(php\b|=)/i;
+
   let body = code;
-  if (/^\s*<\?/.test(code)) {
-    // `<?PHP` is as valid as `<?php`, and stripping only `<?` leaves `PHP` as a parse error.
-    body = code.replace(/^\s*<\?(php\b|=)?/i, (tag) => (tag.endsWith("=") ? "echo " : ""));
+  if (OPEN_TAG.test(code)) {
+    body = code.replace(OPEN_TAG, (tag) => (tag.endsWith("=") ? "echo " : ""));
   } else if (scanMode(code).markupFirst) {
     body = `?>${code}`;
   }

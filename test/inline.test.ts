@@ -157,11 +157,17 @@ describe("open and close tags", () => {
     expect(await BunPHP.capture`<b><?= ${"safe"} ?></b>`).toContain("<b>safe</b>");
   });
 
-  test("a short open tag runs, as it does in the bundled build", async () => {
-    // php-parser defaults short tags off while the php-wasm build has them on; disagreeing made
-    // `scanMode` append a `<?php` re-entry while PHP was already in code mode.
-    expect(await BunPHP.capture`<p>x</p><? echo 1;`).toBe("<p>x</p>1");
-    expect(await BunPHP`<? return 6 * 7;`).toBe(42);
+  test("a bare `<?` is markup, because short tags are pinned off", async () => {
+    // Parser and runtime agree on this now, so there is nothing left to keep in sync.
+    expect(await BunPHP.capture`<? echo 1;`).toBe("<? echo 1;\n");
+    expect(await BunPHP.capture`<p>x</p><? echo 1;`).toBe("<p>x</p><? echo 1;\n");
+  });
+
+  test("an XML declaration survives as markup", async () => {
+    // The classic short-tag gotcha: with short tags on, PHP itself parse-errors on this.
+    expect(await BunPHP.capture`<?xml version="1.0"?><root/>`).toBe(
+      `<?xml version="1.0"?><root/>\n`,
+    );
   });
 
   test("an uppercase open tag runs", async () => {

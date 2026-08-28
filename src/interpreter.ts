@@ -1,7 +1,7 @@
 import type { PHP } from "@php-wasm/universal";
 import { PhpTimeoutError } from "./errors";
 import { runIsolatedCli, type IsolationRequest } from "./isolation";
-import { applyOp, bootPhp, optionOps, writeFileOp } from "./php-runtime";
+import { applyOp, bootPhp, optionOps, warnIfPinned, writeFileOp } from "./php-runtime";
 import type { JournalOp, PhpCliOptions, PhpCliResult, PhpRuntimeOptions } from "./types";
 
 /**
@@ -63,6 +63,7 @@ export class PhpInterpreter {
   }
 
   ini(entries: Record<string, string | number>): Promise<void> {
+    warnIfPinned(entries);
     return this.#apply({ kind: "ini", entries });
   }
 

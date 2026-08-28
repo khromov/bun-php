@@ -424,9 +424,10 @@ wasm abort takes only its own child.
   rejects it, so a file declaring one fails to import.
 - **Only what you mount exists** inside the virtual filesystem. Don't reach for `open_basedir` or
   `disable_functions` as a substitute; their behaviour under php-wasm varies by build.
-- **Short open tags are on**, because the bundled build ships PHP's built-in default and no `php.ini`.
-  So `<? ... ?>` runs as code — and `<?xml version="1.0"?>` is a parse error, exactly as it is in raw
-  PHP with that setting. Open with `<?php`.
+- **Short open tags are off, and pinned.** bun-php sets `short_open_tag=0` on every build, so `<? ... ?>`
+  is markup rather than code and `<?xml version="1.0"?>` passes through untouched. `<?php` and `<?=` are
+  unaffected. Setting `short_open_tag` yourself logs a warning and is ignored: php-parser reads `<?` as
+  markup, and a runtime that disagreed made a `<?` file export nothing at all.
 - **Constants are evaluated at build time**, so a shape whose value depends on the PHP version isn't
   exported at all: an array key past 2^53, or an implicit key following a negative one (PHP 8.3
   changed where it resumes). Those land in the `// Not exported:` trailer instead of exporting a

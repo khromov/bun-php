@@ -72,7 +72,14 @@ async function loadBuild(phpVersion: PhpVersion): Promise<PhpLoaderModule> {
   return build.getPHPLoaderModule();
 }
 
-/** Boot a configured interpreter: spawn handler first, then every journal op in order. */
+/**
+ * Short tags are off on every build, and not negotiable: php-parser reads `<?` as markup, and a
+ * runtime that disagreed made a `<?` file export nothing and a `<?` snippet fail to parse. PHP's
+ * own default is on only because no `php.ini` ships with the wasm builds. `<?=` is unaffected.
+ */
+export const PINNED_INI: Readonly<Record<string, string>> = { short_open_tag: "0" };
+
+/** Boot a configured interpreter: spawn handler first, then every journal op, then what we pin. */
 export async function bootPhp(
   options: PhpRuntimeOptions = {},
   ops: readonly JournalOp[] = [],
@@ -83,13 +90,29 @@ export async function bootPhp(
     await php.setSpawnHandler(options.spawn === "refuse" ? refuseSpawn : options.spawn);
   }
   for (const op of ops) await applyOp(php, op);
+  // Last, so no journal op can leave the runtime disagreeing with the parser.
+  await setPhpIniEntries(php, { ...PINNED_INI });
   return php;
+}
+
+/** Say so rather than let a pinned entry look like it took effect. */
+export function warnIfPinned(entries: Record<string, string | number>): void {
+  const pinned = Object.keys(entries).filter((key) => key in PINNED_INI);
+  if (pinned.length === 0) return;
+  console.warn(
+    `bun-php: ignoring php.ini ${pinned.join(", ")} — bun-php pins ${pinned
+      .map((key) => `${key}=${PINNED_INI[key]}`)
+      .join(", ")} because its parser depends on it. Open PHP with \`<?php\`.`,
+  );
 }
 
 /** The `ini` and `mounts` options as journal ops, so one mechanism configures every instance. */
 export function optionOps(options: PhpRuntimeOptions): JournalOp[] {
   const ops: JournalOp[] = [];
-  if (options.ini) ops.push({ kind: "ini", entries: options.ini });
+  if (options.ini) {
+    warnIfPinned(options.ini);
+    ops.push({ kind: "ini", entries: options.ini });
+  }
   for (const { host, at } of options.mounts ?? []) ops.push({ kind: "mount", host, at });
   return ops;
 }

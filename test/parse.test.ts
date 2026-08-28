@@ -161,10 +161,11 @@ describe("fully-qualified define()", () => {
 });
 
 describe("short open tags", () => {
-  test("a file opening with `<?` is still parsed", () => {
-    // The php-wasm build has short_open_tag on, so the parser must agree or the module exports nothing.
+  test("a file opening with `<?` declares nothing, as the runtime agrees", () => {
+    // bun-php pins short_open_tag off, so `<?` is markup to the parser and to PHP alike. It used
+    // to be markup here and code there, which made the module silently empty.
     const meta = parsePhp(`<? function shortTag(): int { return 1; }`, "/virtual/short.php");
-    expect(meta.functions.map((f) => f.exportName)).toEqual(["shortTag"]);
+    expect(meta.functions).toEqual([]);
   });
 
   test("`<?=` and `<?php` are unaffected", () => {

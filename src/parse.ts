@@ -15,11 +15,9 @@ const NOT_LITERAL = Symbol("not-literal");
 
 /** What the generated module needs from a file: its top-level functions and literal constants. */
 export function parsePhp(source: string, filePath: string): PhpModuleMeta {
-  // The Engine constructor mutates its options object, so build a fresh one each time. Short tags
-  // are on because the php-wasm build has them on; off, a `<?` file lexes as markup and exports nothing.
+  // The Engine constructor mutates its options object, so build a fresh one each time.
   const engine = new Engine({
     parser: { extractDoc: true, suppressErrors: false, version: 805 },
-    lexer: { short_tags: true },
     ast: { withPositions: true },
   });
 
