@@ -278,6 +278,8 @@ function arrayValue(items: Node[]): PhpValue | typeof NOT_LITERAL {
     if (value === NOT_LITERAL) return NOT_LITERAL;
 
     let key: string | number = maxIntKey === null ? 0 : maxIntKey + 1;
+    // Past 2^53 the increment stops moving, so two entries would collide on one key.
+    if (typeof key === "number" && !Number.isSafeInteger(key)) return NOT_LITERAL;
     if (item.key != null) {
       const raw = literalValue(item.key);
       if (raw === NOT_LITERAL) return NOT_LITERAL;
@@ -305,14 +307,22 @@ function phpTruthy(value: PhpValue): boolean {
   return true;
 }
 
-/** Normalise an array key the way PHP does; an array as a key is a PHP TypeError. */
+/**
+ * Normalise an array key the way PHP does; an array as a key is a PHP TypeError. PHP int-ifies any
+ * canonical decimal string that fits its 64-bit int, but JS cannot hold every one of those exactly,
+ * and a key off by one silently reshapes the whole constant — so an inexact one is not a literal.
+ */
 function phpArrayKey(raw: PhpValue): string | number | typeof NOT_LITERAL {
   if (raw === null) return "";
   if (typeof raw === "boolean") return raw ? 1 : 0;
-  if (typeof raw === "number") return Number.isFinite(raw) ? Math.trunc(raw) : NOT_LITERAL;
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) && Number.isSafeInteger(Math.trunc(raw))
+      ? Math.trunc(raw)
+      : NOT_LITERAL;
+  }
   if (typeof raw === "string") {
-    const canonical = /^(0|-?[1-9]\d*)$/.test(raw) && Number.isSafeInteger(Number(raw));
-    return canonical ? Number(raw) : raw;
+    if (!/^(0|-?[1-9]\d*)$/.test(raw)) return raw;
+    return Number.isSafeInteger(Number(raw)) ? Number(raw) : NOT_LITERAL;
   }
   return NOT_LITERAL;
 }

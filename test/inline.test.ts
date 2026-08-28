@@ -147,6 +147,11 @@ describe("open and close tags", () => {
     expect(await BunPHP.capture`<b><?= ${"safe"} ?></b>`).toContain("<b>safe</b>");
   });
 
+  test("an uppercase open tag runs", async () => {
+    // Stripping only `<?` left `PHP return 1;`, which is a parse error.
+    expect(await BunPHP`<?PHP return 6 * 7;`).toBe(42);
+  });
+
   test("a closing tag inside a string literal is not a mode switch", async () => {
     expect(await BunPHP`<?php return "?>";`).toBe("?>");
     expect(await BunPHP`return '?>';`).toBe("?>");
@@ -176,6 +181,11 @@ describe("asClosureBody", () => {
   test("drops a leading open tag and keeps code mode", () => {
     expect(asClosureBody(`<?php return 1;`)).toBe(` return 1;`);
     expect(asClosureBody(`<?= 6 * 7;`)).toBe(`echo  6 * 7;`);
+  });
+
+  test("an open tag is case-insensitive, as PHP's lexer has it", () => {
+    expect(asClosureBody(`<?PHP return 1;`)).toBe(` return 1;`);
+    expect(asClosureBody(`<?Php return 1;`)).toBe(` return 1;`);
   });
 
   test("re-enters code mode only when the snippet really ends in markup", () => {

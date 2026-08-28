@@ -1,4 +1,5 @@
-import { PhpTimeoutError } from "./errors";
+import { PhpError, PhpFatalError, PhpParseError, PhpTimeoutError } from "./errors";
+import { PhpBuildLoadError, PhpBuildNotInstalledError } from "./php-runtime";
 import type { JournalOp, PhpCliResult, PhpVersion } from "./types";
 
 /** What crosses the wire to the runner; everything here must survive JSON. */
@@ -10,9 +11,87 @@ export interface IsolationRequest {
   cwd?: string;
 }
 
-export type IsolationReply =
-  | { ok: true; result: PhpCliResult }
-  | { ok: false; name: string; error: string };
+export type IsolationFailure = {
+  ok: false;
+  name: string;
+  error: string;
+  /** The fields the named error type carries, so the parent can rebuild the same class. */
+  fields?: Record<string, unknown>;
+  /** A cause cannot cross as an object; its message is the part worth keeping. */
+  cause?: string;
+};
+
+export type IsolationReply = { ok: true; result: PhpCliResult } | IsolationFailure;
+
+type Fields = Record<string, unknown>;
+
+/** bun-php's own error types, so one crossing the boundary keeps its class and what it knows. */
+const ERROR_TYPES: Record<
+  string,
+  { fields: readonly string[]; build: (message: string, f: Fields, cause?: string) => Error }
+> = {
+  PhpParseError: {
+    fields: ["file", "line"],
+    build: (message, f) =>
+      new PhpParseError(message, String(f.file ?? ""), f.line == null ? undefined : Number(f.line)),
+  },
+  PhpError: {
+    fields: ["phpClass", "phpFile", "phpLine", "phpTrace"],
+    build: (message, f) =>
+      new PhpError(
+        message,
+        String(f.phpClass ?? ""),
+        String(f.phpFile ?? ""),
+        Number(f.phpLine ?? 0),
+        String(f.phpTrace ?? ""),
+      ),
+  },
+  PhpFatalError: {
+    fields: ["phpFile", "phpLine"],
+    build: (message, f) =>
+      new PhpFatalError(message, String(f.phpFile ?? ""), Number(f.phpLine ?? 0)),
+  },
+  PhpTimeoutError: {
+    fields: ["timeoutMs"],
+    build: (message, f) => new PhpTimeoutError(message, Number(f.timeoutMs ?? 0)),
+  },
+  // These two build their own message from the two fields, so the wire message is redundant.
+  PhpBuildNotInstalledError: {
+    fields: ["phpVersion", "packageName"],
+    build: (_message, f, cause) =>
+      new PhpBuildNotInstalledError(f.phpVersion as PhpVersion, String(f.packageName ?? ""), cause),
+  },
+  PhpBuildLoadError: {
+    fields: ["phpVersion", "packageName"],
+    build: (_message, f, cause) =>
+      new PhpBuildLoadError(f.phpVersion as PhpVersion, String(f.packageName ?? ""), cause),
+  },
+};
+
+/** Flatten an error for the wire; only JSON survives the pipe to the parent. */
+export function serialiseError(err: unknown): IsolationFailure {
+  if (!(err instanceof Error)) return { ok: false, name: "Error", error: String(err) };
+  const known = ERROR_TYPES[err.name];
+  const fields = Object.fromEntries(
+    (known?.fields ?? []).map((key) => [key, (err as unknown as Fields)[key]]),
+  );
+  return {
+    ok: false,
+    name: err.name,
+    error: err.message,
+    ...(known && { fields }),
+    ...(err.cause != null && {
+      cause: err.cause instanceof Error ? err.cause.message : String(err.cause),
+    }),
+  };
+}
+
+/** Rebuild what the child sent, keeping the class whenever bun-php owns it. */
+export function reviveError(failure: IsolationFailure): Error {
+  const known = ERROR_TYPES[failure.name];
+  if (!known) return new Error(`${failure.name}: ${failure.error}`);
+  return known.build(failure.error, failure.fields ?? {}, failure.cause);
+}
 
 // An absolute path, like the plugin's RUNTIME_PATH, so it resolves whether bun-php is a dependency, a link, or this repo.
 const RUNNER_PATH = Bun.fileURLToPath(new URL("./isolation-runner.ts", import.meta.url));
@@ -46,7 +125,7 @@ export function readReply(stdout: string, stderr: string, exitCode: number): Php
     );
   }
 
-  if (!reply.ok) throw new Error(`${reply.name}: ${reply.error}`);
+  if (!reply.ok) throw reviveError(reply);
   return reply.result;
 }
 

@@ -53,6 +53,29 @@ describe("encodeValue", () => {
     );
   });
 
+  test("reports a cycle instead of blowing the stack", () => {
+    // The non-finite scan recurses; without cycle protection it died before phpVar could explain.
+    const list: unknown[] = [];
+    list.push(list);
+    const object: Record<string, unknown> = {};
+    object.self = object;
+
+    for (const value of [list, object]) {
+      const error = (() => {
+        try {
+          encodeValue(value, "f: argument #1");
+        } catch (err) {
+          return err as Error;
+        }
+        throw new Error("should have thrown");
+      })();
+
+      expect(error).not.toBeInstanceOf(RangeError);
+      expect(error.message).toContain("f: argument #1 could not be encoded");
+      expect(error.message).toContain("cyclic");
+    }
+  });
+
   test("names the value in error messages", () => {
     expect(() => encodeValue(undefined, "BunPHP: interpolation #2")).toThrow(
       /BunPHP: interpolation #2 is undefined/,

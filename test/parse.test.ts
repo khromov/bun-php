@@ -116,6 +116,27 @@ describe("parameter types", () => {
   });
 });
 
+describe("array keys past 2^53", () => {
+  const value = (php: string) => parse(php).constants[0]?.value;
+
+  test("an integer key JavaScript cannot hold exactly is not a literal", () => {
+    // PHP int-ifies the string and counts on from it; a rounded key silently reshapes the constant.
+    expect(value(`const A = ["9007199254740993" => "a", "b"];`)).toBeUndefined();
+    expect(value(`const B = [9007199254740993 => "a", "b"];`)).toBeUndefined();
+    expect(parse(`const C = ["9007199254740993" => "a"];`).skipped).toHaveLength(1);
+  });
+
+  test("keys it can hold are still int-ified the way PHP does", () => {
+    expect(value(`const A = ["1" => "a", "b"];`)).toEqual({ "1": "a", "2": "b" });
+    expect(value(`const B = ["0" => "a", "b"];`)).toEqual(["a", "b"]);
+    expect(value(`const C = ["9007199254740991" => "a"];`)).toEqual({ "9007199254740991": "a" });
+  });
+
+  test("a non-numeric key is untouched", () => {
+    expect(value(`const A = ["01" => "a", "x" => "b"];`)).toEqual({ "01": "a", x: "b" });
+  });
+});
+
 describe("docblocks", () => {
   test("extracts the summary and drops tags from it", () => {
     const f = fn(`
@@ -347,6 +368,27 @@ describe("errors", () => {
       expect((error as PhpParseError).file).toBe("/virtual/bad.php");
       expect((error as PhpParseError).line).toBe(1);
     }
+  });
+});
+
+describe("array keys past 2^53", () => {
+  const value = (php: string) => parse(php).constants[0]?.value;
+
+  test("an integer key JavaScript cannot hold exactly is not a literal", () => {
+    // PHP int-ifies the string and counts on from it; a rounded key silently reshapes the constant.
+    expect(value(`const A = ["9007199254740993" => "a", "b"];`)).toBeUndefined();
+    expect(value(`const B = [9007199254740993 => "a", "b"];`)).toBeUndefined();
+    expect(parse(`const C = ["9007199254740993" => "a"];`).skipped).toHaveLength(1);
+  });
+
+  test("keys it can hold are still int-ified the way PHP does", () => {
+    expect(value(`const A = ["1" => "a", "b"];`)).toEqual({ "1": "a", "2": "b" });
+    expect(value(`const B = ["0" => "a", "b"];`)).toEqual(["a", "b"]);
+    expect(value(`const C = ["9007199254740991" => "a"];`)).toEqual({ "9007199254740991": "a" });
+  });
+
+  test("a non-numeric key is untouched", () => {
+    expect(value(`const A = ["01" => "a", "x" => "b"];`)).toEqual({ "01": "a", x: "b" });
   });
 });
 

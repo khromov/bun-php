@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PhpTimeoutError } from "../src/errors";
 import { createPhpModule } from "../src/runtime";
 import type { PhpModuleMeta, StdoutMode } from "../src/types";
 
@@ -105,6 +106,65 @@ describe("streaming output", () => {
   });
 });
 
+describe("runtime.timeoutMs", () => {
+  test("bounds the wait on a module call", async () => {
+    // The plugin accepts and documents it, but nothing outside cli() used to consume it.
+    const module = createPhpModule({
+      id: "/virtual/timeout.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+      runtime: { timeoutMs: 100 },
+    });
+    await module.$ready();
+
+    const error = await module.$eval("usleep(700000); return 1;").catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(PhpTimeoutError);
+    expect((error as PhpTimeoutError).timeoutMs).toBe(100);
+
+    await module.$dispose();
+  }, 30_000);
+
+  test("a call inside the deadline is untouched", async () => {
+    const module = createPhpModule({
+      id: "/virtual/timeout-ok.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+      runtime: { timeoutMs: 30_000 },
+    });
+    expect(await module.$eval("return 7;")).toBe(7);
+    await module.$dispose();
+  }, 30_000);
+});
+
+describe("output chronology", () => {
+  test("buffers left open arrive before output written after the envelope", async () => {
+    // The envelope carries what was still buffered when it was emitted, so it was written first.
+    const module = createPhpModule({
+      id: "/virtual/chrono.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+    });
+
+    const order: string[] = [];
+    await module.$eval(
+      `ob_start();
+         echo "[buffered first]";
+         register_shutdown_function(function () { echo "[shutdown last]"; });
+         return 1;`,
+      (text) => order.push(text),
+    );
+
+    expect(order.join("")).toBe("[buffered first][shutdown last]");
+    await module.$dispose();
+  }, 30_000);
+});
+
 describe("$reset", () => {
   test("defers the re-boot to the next call", async () => {
     const { counter, loader } = countingLoader();
@@ -131,6 +191,26 @@ describe("$reset", () => {
     expect(await module.$eval("return 1;")).toBe(1);
     expect(counter.boots).toBe(2);
 
+    await module.$dispose();
+  }, 30_000);
+
+  test("discards output from a call that lands during the drain", async () => {
+    // Clearing before the drain let an in-flight call refill the buffer past the reset.
+    const module = createPhpModule({
+      id: "/virtual/reset-capture.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "capture",
+    });
+    await module.$ready();
+
+    const call = module.$eval(`usleep(250000); echo "late output"; return 1;`);
+    await Bun.sleep(30);
+    await module.$reset();
+    await call;
+
+    expect(module.$output()).toBe("");
     await module.$dispose();
   }, 30_000);
 

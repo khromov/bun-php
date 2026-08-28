@@ -1,8 +1,8 @@
 import type { PHP } from "@php-wasm/universal";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { PhpFatalError } from "./errors";
-import { PhpInterpreter } from "./interpreter";
+import { PhpFatalError, PhpTimeoutError } from "./errors";
+import { PhpInterpreter, withDeadline } from "./interpreter";
 import { buildCallScript, EnvelopeSplitter, encodeArgs, unwrapEnvelope } from "./marshal";
 import { writeFileOp } from "./php-runtime";
 import type {
@@ -55,7 +55,9 @@ class PhpInstance {
   ) {
     // Mounting the directory gives a live view of the host, so sibling requires, `__DIR__` and Composer
     // work; writing the inlined source is the fallback for a bundle running somewhere else.
-    const mounted = root !== null && existsSync(root);
+    // Gated on the module file: a root that exists without it mounts fine and then fatals on the
+    // `require_once` of every call, where the inlined source would have worked.
+    const mounted = root !== null && existsSync(id);
     // An autoloader outside the virtual filesystem could only fatal, so it goes with the mount.
     this.autoload = mounted ? autoload : null;
     const setup: JournalOp[] = mounted
@@ -76,7 +78,19 @@ class PhpInstance {
     this.#running.add(task);
     const done = () => this.#running.delete(task);
     task.then(done, done);
-    return task;
+
+    const timeoutMs = this.runtime.timeoutMs ?? 0;
+    if (timeoutMs <= 0) return task;
+    // Waiting only, as in-process always is: the request runs on, and the next call queues behind it.
+    return withDeadline(
+      task,
+      timeoutMs,
+      () =>
+        new PhpTimeoutError(
+          `${label}: PHP call exceeded ${timeoutMs}ms; the request is still running and later calls queue behind it`,
+          timeoutMs,
+        ),
+    );
   }
 
   async #run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
@@ -102,9 +116,8 @@ class PhpInstance {
     }
 
     splitter.push(decoder.decode());
+    // `end()` releases any buffers the script left open, in the order PHP wrote them.
     const envelope = splitter.end();
-    // Only buffers the script opened and left open still arrive here.
-    if (envelope?.out) emit(envelope.out);
 
     const [exitCode, stderr] = await Promise.all([response.exitCode, response.stderrText]);
     if (!envelope) {
@@ -131,8 +144,9 @@ class PhpInstance {
 
   /** Discard all PHP state, the virtual filesystem included; the next call boots afresh. */
   async reset(): Promise<void> {
-    this.#captured = "";
     await this.#drain();
+    // After the drain: a call finishing during it would otherwise refill the buffer past the reset.
+    this.#captured = "";
     await this.#interpreter.dispose();
   }
 

@@ -29,21 +29,23 @@ export function encodeArgs(args: readonly unknown[], label = "call"): string {
 }
 
 /** Where a non-finite number hides inside `value`, if anywhere; `phpVar`'s JSON path turns it to null. */
-function nonFinitePath(value: unknown, path: string): string | null {
+function nonFinitePath(value: unknown, path: string, seen: WeakSet<object>): string | null {
   if (typeof value === "number") return Number.isFinite(value) ? null : path;
+  if (value === null || typeof value !== "object") return null;
+  // A cycle would recurse forever; leave it for `phpVar`, which reports it as an encoding failure.
+  if (seen.has(value)) return null;
+  seen.add(value);
+
   if (Array.isArray(value)) {
     return value.reduce<string | null>(
-      (found, item, i) => found ?? nonFinitePath(item, `${path}[${i}]`),
+      (found, item, i) => found ?? nonFinitePath(item, `${path}[${i}]`, seen),
       null,
     );
   }
-  if (value !== null && typeof value === "object") {
-    return Object.entries(value).reduce<string | null>(
-      (found, [key, item]) => found ?? nonFinitePath(item, `${path}.${key}`),
-      null,
-    );
-  }
-  return null;
+  return Object.entries(value).reduce<string | null>(
+    (found, [key, item]) => found ?? nonFinitePath(item, `${path}.${key}`, seen),
+    null,
+  );
 }
 
 /** Encode one JS value as a PHP expression; `context` names it in error messages. */
@@ -60,7 +62,7 @@ export function encodeValue(value: unknown, context: string): string {
     return Number.isNaN(value) ? "NAN" : value > 0 ? "INF" : "-INF";
   }
   // Only a top-level one has a PHP literal to become; nested, JSON would silently make it null.
-  const nested = nonFinitePath(value, "");
+  const nested = nonFinitePath(value, "", new WeakSet());
   if (nested !== null) {
     throw new TypeError(
       `${context} holds a non-finite number at ${nested}; NaN and Infinity survive only as a whole argument`,
@@ -203,6 +205,9 @@ export class EnvelopeSplitter {
       this.#emit(this.#buffer);
       this.#buffer = "";
     }
+    // Buffers the script left open were filled before the envelope was emitted, so they come first.
+    const buffered = this.#envelope?.out;
+    if (buffered) this.#write(buffered);
     this.#write(this.#afterEnvelope);
     this.#afterEnvelope = "";
     return this.#envelope;

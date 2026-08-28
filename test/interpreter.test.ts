@@ -239,6 +239,47 @@ describe("phpVersion", () => {
   );
 
   test(
+    "a failed boot is not cached, so the next call tries again",
+    async () => {
+      // A rejected promise left in place replayed the same failure until $reset()/$dispose().
+      let attempts = 0;
+      const php = createInterpreter({
+        loader: async () => {
+          attempts++;
+          if (attempts === 1) throw new Error("transient boot failure");
+          return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
+        },
+      });
+      try {
+        await expect(php.php()).rejects.toThrow("transient boot failure");
+        expect((await php.cli(["php", "-r", "echo 'recovered';"])).stdout).toBe("recovered");
+        expect(attempts).toBe(2);
+      } finally {
+        await php.dispose();
+      }
+    },
+    BOOT_MS,
+  );
+
+  test(
+    "retired goes away with the instance it described",
+    async () => {
+      // dispose() boots a replacement that no abandoned request owns, so the flag must not stick.
+      const php = createInterpreter({ timeoutMs: 200 });
+      await php
+        .cli(["php", "-r", "$t=microtime(true); while (microtime(true)-$t < 3) {}"])
+        .catch(() => {});
+      expect(php.retired).toBe(true);
+
+      await php.dispose();
+      expect(php.retired).toBe(false);
+      expect((await php.cli(["php", "-r", "echo 'healthy';"])).stdout).toBe("healthy");
+      await php.dispose();
+    },
+    BOOT_MS,
+  );
+
+  test(
     "an op that fails is not recorded in the journal",
     async () => {
       // Recorded regardless, it replays onto every later boot: the caller is told the mount failed

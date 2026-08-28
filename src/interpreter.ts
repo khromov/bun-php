@@ -43,7 +43,14 @@ export class PhpInterpreter {
         ),
       );
     }
-    return (this.#instance ??= bootPhp(this.options, this.#journal));
+    if (this.#instance) return this.#instance;
+    // A failed boot must not stick: a transient one would replay on every later call until $reset().
+    const attempt: Promise<PHP> = bootPhp(this.options, this.#journal).catch((err: unknown) => {
+      if (this.#instance === attempt) this.#instance = null;
+      throw err;
+    });
+    this.#instance = attempt;
+    return attempt;
   }
 
   /** Whether an in-process call timed out here; the abandoned request still owns that instance. */
@@ -118,37 +125,49 @@ export class PhpInterpreter {
   }
 
   // php-wasm cannot interrupt a request, so this bounds waiting only; the abandoned request keeps running.
-  async #deadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expiry = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        this.#retired = true;
-        reject(
-          new PhpTimeoutError(
-            `PHP call exceeded ${timeoutMs}ms; the request is still running and this interpreter is retired`,
-            timeoutMs,
-          ),
-        );
-      }, timeoutMs);
+  #deadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+    return withDeadline(work, timeoutMs, () => {
+      this.#retired = true;
+      return new PhpTimeoutError(
+        `PHP call exceeded ${timeoutMs}ms; the request is still running and this interpreter is retired`,
+        timeoutMs,
+      );
     });
-    // The loser settling later must not surface as an unhandled rejection.
-    void work.catch(() => {});
-    try {
-      return await Promise.race([work, expiry]);
-    } finally {
-      clearTimeout(timer);
-    }
   }
 
   /** Shut down; a disposed interpreter re-boots on next use. */
   async dispose(): Promise<void> {
     const instance = this.#instance;
     this.#instance = null;
+    // The replacement is nobody's abandoned request, so the flag goes with the instance it described.
+    this.#retired = false;
     const php = await instance?.catch(() => null);
     // A runtime that is already exiting throws here, and `createPhpModule` discards this promise.
     try {
       php?.exit();
     } catch {}
+  }
+}
+
+/**
+ * Bound the wait, not the work: php-wasm cannot interrupt a running request, so it keeps going after
+ * this rejects. `expired` builds the error and takes whatever note the caller keeps of the timeout.
+ */
+export async function withDeadline<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+  expired: () => PhpTimeoutError,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(expired()), timeoutMs);
+  });
+  // The loser settling later must not surface as an unhandled rejection.
+  void work.catch(() => {});
+  try {
+    return await Promise.race([work, expiry]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

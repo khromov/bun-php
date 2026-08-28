@@ -96,8 +96,9 @@ filesystem is an `E_COMPILE_ERROR` on _every_ call, not just the first. An expli
 writeFile, ini. `PhpInterpreter` turns its `ini`/`mounts` options into journal ops at construction and
 `bootPhp(options, ops)` replays them onto every fresh instance, so there is no separate "apply options" step
 to drift from it. `PhpInstance` seeds its interpreter's journal with either a mount of the project root or —
-when the directory is not on disk, a bundle running elsewhere — a mkdir plus writeFile of the inlined
-source. The same journal is what `isolation: "process"` ships to its child.
+when the _module file_ is not on disk, a bundle running elsewhere — a mkdir plus writeFile of the inlined
+source. The gate is the file, not the directory: a root that exists without the file mounts happily and
+then fatals on the `require_once` of every call. The same journal is what `isolation: "process"` ships to its child.
 
 **`PHP.cli()` consumes its instance.** It calls `exit()` on the runtime when the command finishes, and a
 second `cli()` on the same instance returns exit code **-1 with no output and no error at all**. So `#cli`
@@ -110,8 +111,18 @@ recording first would run the op twice) and pushes only after `applyOp` resolves
 `mount()` that rejected still replayed onto every later boot: the caller was told it failed while it broke
 every subsequent `cli()` with an opaque error.
 
+**In-process `timeoutMs` bounds waiting, wherever it is set.** `withDeadline` in `interpreter.ts` is the
+one implementation: `PhpInterpreter` uses it for `cli()` and sets `retired`, and `PhpInstance.run` uses it
+for module calls, where there is no flag to set and later calls simply queue behind the abandoned request.
+A module's `timeoutMs` used to be accepted, documented and silently ignored.
+
+**A rejected boot is not cached.** `php()` clears `#instance` when `bootPhp` rejects, so a transient
+failure does not replay on every later call until `$reset()`. `dispose()` clears `retired` for the same
+reason: the replacement instance is nobody's abandoned request.
+
 **`$reset()` and `$dispose()` are lazy.** Both wait for in-flight calls (`#running`), then `dispose()` the
-interpreter; the next call re-boots and the journal re-mounts the root from scratch. That is why
+interpreter; `reset()` clears the captured buffer _after_ that drain, or a call finishing during it refills
+the buffer past the reset. the next call re-boots and the journal re-mounts the root from scratch. That is why
 php-wasm's `hotSwapPHPRuntime` is not used — a hot swap would copy the old MEMFS across, and `$reset` exists
 to discard it. `$dispose` also drops the cache entry, but only while it still points at this instance, so
 disposing a stale `--hot` handle does not evict its replacement.
@@ -132,11 +143,15 @@ it. `test/marshal.test.ts` feeds the splitter whole strings and chunk-by-chunk, 
 A failed pair puts back only its _opening_ sentinel and stays in-envelope, so the closing one becomes the
 next opener: otherwise one stray sentinel in the script's output shifts the pairing by one and the real
 envelope is emitted as text.
-Only buffers the _user's_ code opened and left open still arrive in the envelope's `out` field.
+Only buffers the _user's_ code opened and left open still arrive in the envelope's `out` field, and
+`end()` releases them before the output held after the envelope, because PHP wrote them first.
 
 **Values cross by JSON, so `NaN`/`Infinity` only survive as a whole argument.** `encodeValue` turns a
 top-level one into PHP's `NAN`/`INF`, but `phpVar` encodes anything else through JSON, where they become
-`null`; `nonFinitePath` finds a nested one and throws instead of losing it silently. `encodeArgs` builds its
+`null`; `nonFinitePath` finds a nested one and throws instead of losing it silently — it carries a `WeakSet`,
+because a cycle would otherwise blow the stack before `phpVar` could report it as an encoding failure.
+Nested `undefined` is deliberately _not_ in that rule: it follows JSON, becoming `null` in an array and a
+dropped key in an object, which is what JavaScript callers already expect. `encodeArgs` builds its
 list by index rather than `.map`, which skips array holes and used to emit the invalid `f(, 1)`.
 
 **Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module and the Composer
@@ -184,6 +199,8 @@ API: the function stays a named export, but `dts.ts` leaves it off the `_default
 generators emit a "Named export only" trailer, because a second `call` key is a TS2717 and at runtime the
 API wins anyway — which is why `createPhpModule` lists `call` _after_ the function spread. Every other API
 member is `$`-prefixed and a PHP function name cannot start with `$`, so `call` is the whole list.
+An array key PHP would int-ify but JavaScript cannot hold exactly (past 2^53) makes the whole constant
+`NOT_LITERAL`: rounding it silently collides two entries or restarts the implicit key at zero.
 `RESERVED` in `codegen.ts` is _ECMAScript's_ invalid-binding list (reserved words + strict-mode additions +
 `arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
 transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,
@@ -233,7 +250,15 @@ and SIGKILLs on timeout — so under isolation `timeoutMs` really cancels, concu
 `createPhpModule` refuses `runtime.isolation` outright — the imported-module path runs many small calls
 against one live instance, the opposite shape. The runner constructs a plain in-process
 `PhpInterpreter(options, journal)`: the child _is_ the isolation, and reusing `cli()` keeps the two paths from
-diverging.
+diverging. Errors cross through `serialiseError`/`reviveError`, which carry the fields of bun-php's own error
+types so `instanceof`, `packageName`/`phpClass` and the cause's message survive the JSON boundary; an
+unknown name stays a plain `Error`.
+
+**Interleaving `mount()`/`writeFile()` with a concurrent `cli()` is not supported.** `#apply` awaits `php()`
+and then applies the op, and in between a `cli()` can consume and exit that very instance. Twenty attempts
+across both orderings produced no spurious rejection — `cli()` nulls `#instance` synchronously, so a
+concurrent op boots its own — so there is no serialiser for a race nobody has reproduced. Do the setup
+before the call.
 
 **Sidecar `.d.ts` files:** `test/fixtures/*.php.d.ts` and `demos/php/*.php.d.ts` are gitignored (regenerated
 on the next run); `example/hello.php.d.ts` is committed on purpose as a worked example. `demos/vendor/` is

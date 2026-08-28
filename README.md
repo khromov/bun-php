@@ -289,6 +289,9 @@ It fixes three things the in-process interpreter can't:
 - **Calls run in parallel.** Two concurrent one-second calls take 1.04× the time of one, versus 1.96×
   in-process.
 
+Errors keep their type across the boundary: a `PhpBuildNotInstalledError` from the child is still one in the
+parent, with its `packageName` and the cause's message intact.
+
 Each child boots its own wasm and replays your `mount`/`writeFile`/`mkdir`/`ini` calls before the command,
 so it sees the same files and config an in-process interpreter would. That setup has to survive JSON:
 `loader` and a function-valued `spawn` are rejected at construction (`spawn: "refuse"` is fine), and `php()`
@@ -346,6 +349,10 @@ Bun.build({
 | `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.         |
 | `runtime`  | -           | Interpreter options for every module loaded: `phpVersion`, `ini`, `mounts`, `spawn`, `timeoutMs`.         |
 
+As in-process everywhere, `runtime.timeoutMs` bounds how long you **wait**: the call rejects with
+`PhpTimeoutError` while the PHP keeps running, and later calls queue behind it. Only `isolation: "process"`
+can actually cancel.
+
 `runtime` reaches the module as generated source, so it takes only what survives JSON: `loader`, a
 `spawn` handler function and `isolation` are rejected up front. Reach for `createInterpreter` when you
 need those.
@@ -396,7 +403,9 @@ wasm abort takes only its own child.
 - **ESM only.** `.php` modules can't be loaded with `require()`.
 - **Values cross by JSON.** Integers beyond `Number.MAX_SAFE_INTEGER` lose precision; resources and closures
   can't be returned; objects arrive as their public properties. `NaN` and `Infinity` cross as whole
-  arguments only — nested in an array or object they throw rather than silently arriving as `null`. PHP list arrays become JS arrays,
+  arguments only — nested in an array or object they throw rather than silently arriving as `null`.
+  Nested `undefined` follows JSON instead: `null` in an array, and a dropped key in an object. Only a
+  whole argument that is `undefined` is an error. PHP list arrays become JS arrays,
   associative arrays become objects, and JS objects arrive in PHP as associative arrays (not `stdClass`).
 - **By-reference parameters (`&$x`) don't write back.** Arguments pass by value; the generated types carry a
   JSDoc warning.

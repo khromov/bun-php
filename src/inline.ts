@@ -75,7 +75,8 @@ function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
 export function asClosureBody(code: string): string {
   let body = code;
   if (/^\s*<\?/.test(code)) {
-    body = code.replace(/^\s*<\?(php\b|=)?/, (tag) => (tag.endsWith("=") ? "echo " : ""));
+    // `<?PHP` is as valid as `<?php`, and stripping only `<?` leaves `PHP` as a parse error.
+    body = code.replace(/^\s*<\?(php\b|=)?/i, (tag) => (tag.endsWith("=") ? "echo " : ""));
   } else if (scanMode(code).markupFirst) {
     body = `?>${code}`;
   }

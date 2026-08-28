@@ -8,7 +8,7 @@ export { generateModule } from "./codegen";
 export { generateDts } from "./dts";
 export { PhpError, PhpFatalError, PhpParseError, PhpTimeoutError } from "./errors";
 export { createInterpreter, PhpInterpreter } from "./interpreter";
-export type { IsolationReply, IsolationRequest } from "./isolation";
+export type { IsolationFailure, IsolationReply, IsolationRequest } from "./isolation";
 export {
   bootPhp,
   nodeFsMountHandler,

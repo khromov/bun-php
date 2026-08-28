@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PhpTimeoutError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
-import { readReply } from "../src/isolation";
+import { PhpError } from "../src/errors";
+import { readReply, reviveError, serialiseError } from "../src/isolation";
+import { PhpBuildNotInstalledError } from "../src/php-runtime";
 
 const BOOT_MS = 30_000;
 
@@ -176,6 +178,41 @@ describe("isolation: 'process'", () => {
   test("php() has no instance to hand back", async () => {
     const php = createInterpreter({ isolation: "process" });
     await expect(php.php()).rejects.toThrow("isolation");
+  });
+});
+
+describe("errors crossing the boundary", () => {
+  test("keep their class and fields", async () => {
+    // A plain Error loses instanceof, packageName and the cause that explains what really failed.
+    const php = createInterpreter({ phpVersion: "8.1", isolation: "process" });
+    const error = await php.cli(["php", "-v"]).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PhpBuildNotInstalledError);
+    expect((error as PhpBuildNotInstalledError).packageName).toBe("@php-wasm/node-8-1");
+    expect((error as PhpBuildNotInstalledError).phpVersion).toBe("8.1");
+    expect((error as Error).cause).toBeDefined();
+    expect((error as Error).message).toStartWith("PHP 8.1 needs @php-wasm/node-8-1");
+  });
+
+  test("round-trip through the wire shape", () => {
+    const original = new PhpError("boom", "RuntimeException", "/app.php", 12, "#0 {main}");
+    const revived = reviveError(serialiseError(original)) as PhpError;
+
+    expect(revived).toBeInstanceOf(PhpError);
+    expect(revived.phpClass).toBe("RuntimeException");
+    expect(revived.phpLine).toBe(12);
+    expect(revived.phpTrace).toBe("#0 {main}");
+    expect(JSON.parse(JSON.stringify(serialiseError(original))).name).toBe("PhpError");
+  });
+
+  test("an unknown error type stays a plain Error", () => {
+    const revived = reviveError(serialiseError(new RangeError("out of range")));
+    expect(revived).toBeInstanceOf(Error);
+    expect(revived.message).toBe("RangeError: out of range");
+  });
+
+  test("a non-Error rejection still crosses", () => {
+    expect(reviveError(serialiseError("just a string")).message).toBe("Error: just a string");
   });
 });
 
