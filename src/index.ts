@@ -9,7 +9,13 @@ export { generateDts } from "./dts";
 export { PhpError, PhpFatalError, PhpParseError, PhpTimeoutError } from "./errors";
 export { createInterpreter, PhpInterpreter } from "./interpreter";
 export type { IsolationReply, IsolationRequest } from "./isolation";
-export { bootPhp, nodeFsMountHandler, PHP_VERSION, PhpBuildNotInstalledError } from "./php-runtime";
+export {
+  bootPhp,
+  nodeFsMountHandler,
+  PHP_VERSION,
+  PhpBuildLoadError,
+  PhpBuildNotInstalledError,
+} from "./php-runtime";
 // Re-exported so reaching the interpreter through `$php()` needs no direct dependency on @php-wasm/universal.
 export type { MountHandler, PHP, SpawnHandler } from "@php-wasm/universal";
 export type {

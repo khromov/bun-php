@@ -167,6 +167,23 @@ describe("generated .d.ts", () => {
     expect(dts).not.toContain("import");
     expect(dts).toContain("type PhpArray =");
   });
+
+  test("types the default export the way PhpModuleApi does", () => {
+    // A .php import resolves to the sidecar, so anything missing here is untypeable for the caller.
+    const { dts } = build(`function f(): void {}`);
+    expect(dts).toContain("$eval(code: string, onOutput?: (text: string) => void): Promise<any>;");
+    // $reset is lazy: it discards state and lets the *next* call pay for the boot.
+    expect(dts).toContain("/** Discard all PHP state; the next call boots a fresh interpreter. */");
+  });
+
+  test("the committed example sidecar is current", async () => {
+    // example/hello.php.d.ts is checked in as a worked example, so a dts change must regenerate it.
+    const path = "example/hello.php";
+    const source = await Bun.file(path).text();
+    expect(generateDts(parsePhp(source, path), "hello.php")).toBe(
+      await Bun.file(`${path}.d.ts`).text(),
+    );
+  });
 });
 
 /**

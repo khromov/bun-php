@@ -29,6 +29,75 @@ function fillTemplate(strings: TemplateStringsArray, values: unknown[]): string 
   return code;
 }
 
+const HEREDOC =
+  /^<<<[ \t]*(?:"([A-Za-z_\x80-\uffff]\w*)"|'([A-Za-z_\x80-\uffff]\w*)'|([A-Za-z_\x80-\uffff]\w*))\r?\n/;
+
+/** Past the string literal opening at `i`; a backslash escapes the next character in every flavour. */
+function skipString(code: string, i: number): number {
+  const quote = code[i];
+  for (let j = i + 1; j < code.length; j++) {
+    if (code[j] === "\\") j++;
+    else if (code[j] === quote) return j + 1;
+  }
+  return code.length;
+}
+
+/** Past the heredoc/nowdoc opening at `i`, or `i` itself when `<<<` starts something else. */
+function skipHeredoc(code: string, i: number): number {
+  const open = HEREDOC.exec(code.slice(i));
+  if (!open) return i;
+  const label = open[1] ?? open[2] ?? open[3];
+  const start = i + open[0].length;
+  // PHP 7.3 lets the terminator be indented, and it ends the body wherever it appears.
+  const end = new RegExp(`^[ \t]*${label}(?!\\w)`, "m").exec(code.slice(start));
+  return end ? start + end.index + end[0].length : code.length;
+}
+
+/**
+ * Where `code` leaves the parser, read from `inCode`, and whether an open tag turns up while still in
+ * code mode — a snippet that meant to start in markup. Tags inside string literals, comments and
+ * heredocs are not tags, which `includes`/`lastIndexOf` cannot tell apart.
+ */
+function scanMode(code: string, inCode: boolean): { markupFirst: boolean; endsInCode: boolean } {
+  let markupFirst = false;
+  let i = 0;
+
+  while (i < code.length) {
+    if (!inCode) {
+      const open = code.indexOf("<?", i);
+      if (open < 0) break;
+      inCode = true;
+      i = open + (code.startsWith("<?php", open) ? 5 : code.startsWith("<?=", open) ? 3 : 2);
+    } else if (code.startsWith("?>", i)) {
+      // Code ran before this tag, so whatever opens later cannot make the snippet markup-first.
+      inCode = false;
+      i += 2;
+    } else if (code.startsWith("<?", i)) {
+      // Never a tag in code mode, but nothing else puts `<?` there: the snippet opened with markup.
+      markupFirst = true;
+      i += 2;
+    } else if (code[i] === "'" || code[i] === '"' || code[i] === "`") {
+      i = skipString(code, i);
+    } else if (code.startsWith("/*", i)) {
+      const end = code.indexOf("*/", i + 2);
+      i = end < 0 ? code.length : end + 2;
+    } else if (code.startsWith("//", i) || (code[i] === "#" && code[i + 1] !== "[")) {
+      // A `?>` closes PHP mode from inside a line comment, unlike one inside a block comment.
+      const newline = code.indexOf("\n", i);
+      const close = code.indexOf("?>", i);
+      if (close >= 0 && (newline < 0 || close < newline)) {
+        inCode = false;
+        i = close + 2;
+      } else i = newline < 0 ? code.length : newline + 1;
+    } else if (code.startsWith("<<<", i)) {
+      const past = skipHeredoc(code, i);
+      i = past > i ? past : i + 1;
+    } else i++;
+  }
+
+  return { markupFirst, endsInCode: inCode };
+}
+
 /**
  * A snippet runs inside a closure, which starts in code mode, whereas a PHP file starts in markup
  * mode. So a leading open tag is dropped (`<?=` becomes `echo`), leading markup before a later tag is
@@ -36,15 +105,15 @@ function fillTemplate(strings: TemplateStringsArray, values: unknown[]): string 
  * mode so the wrapper's closing brace is not swallowed as text. PHP drops the one newline after `?>`,
  * so that re-entry prints nothing.
  */
-function asClosureBody(code: string): string {
+export function asClosureBody(code: string): string {
   let body = code;
   if (/^\s*<\?/.test(code)) {
     body = code.replace(/^\s*<\?(php\b|=)?/, (tag) => (tag.endsWith("=") ? "echo " : ""));
-  } else if (code.includes("<?")) {
+  } else if (scanMode(code, true).markupFirst) {
     body = `?>${code}`;
   }
-  // An open tag inside a string literal would fool this; inline snippets do not take that shape.
-  if (body.lastIndexOf("?>") > body.lastIndexOf("<?")) body += "\n<?php ";
+  // A leading `?>` flips the scan to markup at index 0, so every branch can be read from code mode.
+  if (!scanMode(body, true).endsInCode) body += "\n<?php ";
   return body;
 }
 

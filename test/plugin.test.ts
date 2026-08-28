@@ -154,6 +154,50 @@ describe("Bun.build", () => {
   });
 });
 
+describe("mount: false", () => {
+  /** A Composer project: a detected `vendor/autoload.php` is what `mount: false` has to drop. */
+  async function composerProject(): Promise<{ dir: string; file: string; autoload: string }> {
+    const dir = await scratch();
+    await Bun.write(join(dir, "composer.json"), "{}");
+    const autoload = join(dir, "vendor", "autoload.php");
+    await Bun.write(autoload, `<?php function fromAutoload(): string { return "autoloaded"; }`);
+    const file = join(dir, "app.php");
+    await Bun.write(file, `<?php function inlined(): string { return "from inlined source"; }`);
+    return { dir, file, autoload };
+  }
+
+  test("drops the detected autoloader along with the mount", async () => {
+    const { file, autoload } = await composerProject();
+
+    const mounted = await runOnLoad(phpPlugin(), file);
+    expect(mounted.contents).toContain(`autoload: ${JSON.stringify(autoload)},`);
+
+    // Without the mount that path is not in the virtual filesystem, so requiring it can only fatal.
+    const unmounted = await runOnLoad(phpPlugin({ mount: false }), file);
+    expect(unmounted.contents).toContain("root: null,");
+    expect(unmounted.contents).toContain("autoload: null,");
+  });
+
+  test("an explicit autoload path still wins", async () => {
+    const { file } = await composerProject();
+    const explicit = await runOnLoad(phpPlugin({ mount: false, autoload: "/opt/boot.php" }), file);
+    expect(explicit.contents).toContain(`autoload: "/opt/boot.php",`);
+  });
+
+  test("the generated module still calls into PHP", async () => {
+    const { dir, file } = await composerProject();
+    const { contents } = await runOnLoad(phpPlugin({ mount: false }), file);
+
+    // Loading the real generated module is the only way to see the failed require_once.
+    const entry = join(dir, "app.mjs");
+    await Bun.write(entry, contents as string);
+    const mod = await import(entry);
+
+    expect(await mod.inlined()).toBe("from inlined source");
+    await mod.default.$dispose();
+  }, 30_000);
+});
+
 describe("stdout modes", () => {
   const talkative = `<?php function talks(): string { echo "side-effect"; return "value"; }`;
 

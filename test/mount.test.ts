@@ -171,4 +171,16 @@ describe("fallback when the directory is not on disk", () => {
 
     expect(await mod.call("inlined", [])).toBe("from inlined source");
   });
+
+  test("an autoloader that was never mounted is not required", async () => {
+    // A bundle built where vendor/ existed and run where the root does not: the autoload path
+    // survives into the module, but requiring it would fatal on every call.
+    const source = `<?php function stillWorks(): string { return "no autoloader needed"; }`;
+    const mod = moduleFor("/nowhere/on/disk/bundled.php", source, {
+      root: "/nowhere/on/disk",
+      autoload: "/nowhere/on/disk/vendor/autoload.php",
+    });
+
+    expect(await mod.call("stillWorks", [])).toBe("no autoloader needed");
+  });
 });

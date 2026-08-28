@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PhpTimeoutError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
-import { PhpBuildNotInstalledError } from "../src/php-runtime";
+import { buildImportError, PhpBuildLoadError, PhpBuildNotInstalledError } from "../src/php-runtime";
 
 const BOOT_MS = 30_000;
 
@@ -238,12 +238,54 @@ describe("phpVersion", () => {
     BOOT_MS,
   );
 
+  test(
+    "dispose survives a runtime that throws on exit",
+    async () => {
+      // createPhpModule discards this promise (`void cached.dispose()`), so a rejection here
+      // would be an unhandled rejection with nobody to catch it.
+      const php = createInterpreter();
+      const instance = await php.php();
+      const exit = instance.exit.bind(instance);
+      instance.exit = () => {
+        throw new Error("already exiting");
+      };
+
+      await expect(php.dispose()).resolves.toBeUndefined();
+
+      instance.exit = exit;
+      instance.exit();
+    },
+    BOOT_MS,
+  );
+
   test("names the package a missing build needs", async () => {
     const php = createInterpreter({ phpVersion: "8.1" });
     // 8.1 is not among this project's devDependencies, so the import fails.
     const error = await php.cli(["php", "-v"]).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(PhpBuildNotInstalledError);
     expect((error as Error).message).toContain("@php-wasm/node-8-1");
+    expect((error as Error).message).toContain("not installed");
+    expect((error as Error).cause).toBeDefined();
+  });
+
+  test("tells a broken build apart from a missing one", async () => {
+    // Both are real import failures: one cannot resolve, the other throws while evaluating.
+    // The specifiers go through variables so TypeScript does not try to resolve them itself.
+    const absent = "@php-wasm/node-8-1";
+    const throws = 'data:text/javascript,throw new TypeError("boom")';
+    const missing = await import(absent).catch((err: unknown) => err);
+    const broken = await import(throws).catch((err: unknown) => err);
+
+    const notInstalled = buildImportError("8.1", "@php-wasm/node-8-1", missing);
+    expect(notInstalled).toBeInstanceOf(PhpBuildNotInstalledError);
+    expect(notInstalled.message).toContain("bun add @php-wasm/node-8-1");
+
+    // `bun add` cannot fix a package that is already there, so it must not be the advice.
+    const failedToLoad = buildImportError("8.1", "@php-wasm/node-8-1", broken);
+    expect(failedToLoad).toBeInstanceOf(PhpBuildLoadError);
+    expect(failedToLoad.message).toContain("is installed but failed to load");
+    expect(failedToLoad.message).not.toContain("bun add");
+    expect(failedToLoad.cause).toBe(broken);
   });
 
   test(

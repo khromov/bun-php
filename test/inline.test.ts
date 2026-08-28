@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { PhpError } from "../src/errors";
-import { BunPHP } from "../src/inline";
+import { asClosureBody, BunPHP } from "../src/inline";
 
 afterAll(async () => {
   await BunPHP.dispose();
@@ -145,6 +145,69 @@ describe("open and close tags", () => {
 
   test("interpolation works inside markup", async () => {
     expect(await BunPHP.capture`<b><?= ${"safe"} ?></b>`).toContain("<b>safe</b>");
+  });
+
+  test("a closing tag inside a string literal is not a mode switch", async () => {
+    expect(await BunPHP`<?php return "?>";`).toBe("?>");
+    expect(await BunPHP`return '?>';`).toBe("?>");
+  });
+
+  test("an opening tag inside a string literal is not leading markup", async () => {
+    expect(await BunPHP`return "<?";`).toBe("<?");
+    expect(await BunPHP`return "<?php";`).toBe("<?php");
+  });
+
+  test("a snippet that starts as code keeps running as code across a tag", async () => {
+    expect(await BunPHP.capture`echo "a"; ?><?php echo "b";`).toBe("ab");
+  });
+
+  test("a closing tag inside a comment or heredoc is not a mode switch", async () => {
+    expect(await BunPHP`/* ?> */ return 1;`).toBe(1);
+    expect(await BunPHP`return <<<'EOT'\n?>\nEOT;`).toBe("?>");
+  });
+});
+
+/** Where the tag rules actually live; testing them here costs no interpreter boot. */
+describe("asClosureBody", () => {
+  test("drops a leading open tag and keeps code mode", () => {
+    expect(asClosureBody(`<?php return 1;`)).toBe(` return 1;`);
+    expect(asClosureBody(`<?= 6 * 7;`)).toBe(`echo  6 * 7;`);
+  });
+
+  test("re-enters code mode only when the snippet really ends in markup", () => {
+    expect(asClosureBody(`echo "a"; ?>`)).toBe(`echo "a"; ?>\n<?php `);
+    expect(asClosureBody(`<?php echo "a"; ?><i>b</i><?php echo "c";`)).toBe(
+      ` echo "a"; ?><i>b</i><?php echo "c";`,
+    );
+  });
+
+  test("prefixes `?>` only for markup ahead of a real tag", () => {
+    expect(asClosureBody(`<p>a</p><?php echo "b";`)).toBe(`?><p>a</p><?php echo "b";`);
+    expect(asClosureBody(`return "<?";`)).toBe(`return "<?";`);
+    // Code ran before that tag, so the snippet is code-first however many tags follow.
+    expect(asClosureBody(`echo "a"; ?><?php echo "b";`)).toBe(`echo "a"; ?><?php echo "b";`);
+  });
+
+  test("ignores tags inside string literals", () => {
+    expect(asClosureBody(`return "?>";`)).toBe(`return "?>";`);
+    expect(asClosureBody(`return '?>';`)).toBe(`return '?>';`);
+    // The escaped quote does not end the literal, so the `?>` inside it is still not a tag.
+    expect(asClosureBody(`return "a\\"?>";`)).toBe(`return "a\\"?>";`);
+  });
+
+  test("ignores a closing tag inside a block comment, but not a line comment", () => {
+    expect(asClosureBody(`/* ?> */ return 1;`)).toBe(`/* ?> */ return 1;`);
+    // PHP ends a line comment at `?>` and leaves code mode with it.
+    expect(asClosureBody(`// x ?> tail`)).toBe(`// x ?> tail\n<?php `);
+    // `#[` opens an attribute, not a comment.
+    expect(asClosureBody(`#[Attr] function f() {} return 1;`)).toBe(
+      `#[Attr] function f() {} return 1;`,
+    );
+  });
+
+  test("ignores tags inside a heredoc or nowdoc", () => {
+    expect(asClosureBody(`return <<<'EOT'\n?>\nEOT;`)).toBe(`return <<<'EOT'\n?>\nEOT;`);
+    expect(asClosureBody(`return <<<EOT\n<?php\n  EOT;`)).toBe(`return <<<EOT\n<?php\n  EOT;`);
   });
 });
 

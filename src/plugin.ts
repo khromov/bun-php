@@ -30,7 +30,11 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
       build.onLoad({ filter }, async ({ path }): Promise<LoadResult> => {
         const source = await Bun.file(path).text();
         const meta = parsePhp(source, path);
-        const project = resolveProject(path, { autoload: options.autoload });
+        // Without a mount only the module's own source is in the VFS, so a detected autoloader
+        // could only be a `require_once` of a file that is not there.
+        const project = resolveProject(path, {
+          autoload: mount ? options.autoload : (options.autoload ?? false),
+        });
 
         if (writeDts) await writeSidecar(path, meta);
 

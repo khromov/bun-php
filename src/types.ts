@@ -69,7 +69,8 @@ export interface PhpPluginOptions {
   stdout?: StdoutMode;
   /** Which files to handle. Default `/\.php$/`. */
   filter?: RegExp;
-  /** Mount the project directory so sibling `require`s, `__DIR__` and Composer resolve. Default `true`. */
+  /** Mount the project directory so sibling `require`s, `__DIR__` and Composer resolve. Default `true`.
+   * `false` also drops the detected autoloader, which could not be reached without the mount. */
   mount?: boolean;
   /** File to require before the module. Defaults to a detected `vendor/autoload.php`; `false` disables. */
   autoload?: string | false;

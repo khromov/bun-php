@@ -86,6 +86,12 @@ interpreter to boot must land in that key, or a caller asking for it silently ge
 `--hot` concern drives the "skip the write if the content is unchanged" guard in `writeSidecar`: rewriting
 churns mtime and retriggers the watcher in a loop.
 
+**An autoloader is only ever required when the root is mounted.** `plugin.ts` passes `autoload: false` to
+`resolveProject` when `mount: false`, and `PhpInstance` drops the autoload path whenever it takes the
+mkdir+writeFile fallback instead of mounting — a `require_once` of a host path that is not in the virtual
+filesystem is an `E_COMPILE_ERROR` on _every_ call, not just the first. An explicitly configured
+`autoload: "<path>"` still survives `mount: false`; only detection is switched off.
+
 **One journal configures every instance.** A `JournalOp` (`php-runtime.ts`) is plain data: mount, mkdir,
 writeFile, ini. `PhpInterpreter` turns its `ini`/`mounts` options into journal ops at construction and
 `bootPhp(options, ops)` replays them onto every fresh instance, so there is no separate "apply options" step
@@ -160,7 +166,10 @@ share the one map; `convertDocPart` handles the docblock syntax around them). Th
 `@param`/`@return` docblock tag.
 
 **PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
-`@php-wasm/node-X-Y` resolved with a dynamic `import()`. Only 8.5 is a real dependency; the rest are optional
+`@php-wasm/node-X-Y` resolved with a dynamic `import()`. `buildImportError` classifies a failed import
+rather than assuming: only `ERR_MODULE_NOT_FOUND` is `PhpBuildNotInstalledError` with its `bun add` advice,
+and anything else — a build that resolved but threw — is `PhpBuildLoadError`, so the message never sends
+someone to install what they already have. Only 8.5 is a real dependency; the rest are optional
 peer dependencies, because each build is tens of MB of wasm. `@php-wasm/node` is deliberately avoided — it
 statically imports a NAN native addon that throws at module-evaluation time when its binding fails to load,
 which is also why `nodeFsMountHandler` is implemented here against the Emscripten FS directly.

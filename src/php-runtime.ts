@@ -30,13 +30,40 @@ export class PhpBuildNotInstalledError extends Error {
   }
 }
 
+/** A build package that resolved but could not be loaded: a bad wasm asset, a throwing module, ... */
+export class PhpBuildLoadError extends Error {
+  override readonly name = "PhpBuildLoadError";
+  constructor(
+    readonly phpVersion: PhpVersion,
+    readonly packageName: string,
+    cause: unknown,
+  ) {
+    super(
+      `PHP ${phpVersion} build ${packageName} is installed but failed to load; see the cause.`,
+      { cause },
+    );
+  }
+}
+
+/** Only a resolution failure means "not installed"; anything else came out of the build itself. */
+export function buildImportError(
+  phpVersion: PhpVersion,
+  packageName: string,
+  cause: unknown,
+): PhpBuildNotInstalledError | PhpBuildLoadError {
+  const code = (cause as { code?: unknown } | null | undefined)?.code;
+  return code === "ERR_MODULE_NOT_FOUND"
+    ? new PhpBuildNotInstalledError(phpVersion, packageName, cause)
+    : new PhpBuildLoadError(phpVersion, packageName, cause);
+}
+
 async function loadBuild(phpVersion: PhpVersion): Promise<PhpLoaderModule> {
   const packageName = BUILD_PACKAGES[phpVersion];
   let build: { getPHPLoaderModule(): Promise<PhpLoaderModule> };
   try {
     build = await import(packageName);
   } catch (err) {
-    throw new PhpBuildNotInstalledError(phpVersion, packageName, err);
+    throw buildImportError(phpVersion, packageName, err);
   }
   return build.getPHPLoaderModule();
 }

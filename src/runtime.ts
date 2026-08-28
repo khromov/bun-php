@@ -39,6 +39,8 @@ function cache(): Map<string, PhpInstance> {
 class PhpInstance {
   readonly #interpreter: PhpInterpreter;
   #captured = "";
+  /** The autoloader to require, once it is known to be reachable. */
+  readonly autoload: string | null;
   /** Calls in progress, so reset/dispose can wait them out. */
   readonly #running = new Set<Promise<unknown>>();
 
@@ -46,17 +48,19 @@ class PhpInstance {
     readonly id: string,
     readonly key: string,
     readonly stdout: StdoutMode,
-    readonly autoload: string | null,
+    autoload: string | null,
     readonly runtime: PhpRuntimeOptions,
     root: string | null,
     source: string,
   ) {
     // Mounting the directory gives a live view of the host, so sibling requires, `__DIR__` and Composer
     // work; writing the inlined source is the fallback for a bundle running somewhere else.
-    const setup: JournalOp[] =
-      root && existsSync(root)
-        ? [{ kind: "mount", host: root, at: root }]
-        : [{ kind: "mkdir", path: dirname(id) }, writeFileOp(id, source)];
+    const mounted = root !== null && existsSync(root);
+    // An autoloader outside the virtual filesystem could only fatal, so it goes with the mount.
+    this.autoload = mounted ? autoload : null;
+    const setup: JournalOp[] = mounted
+      ? [{ kind: "mount", host: root, at: root }]
+      : [{ kind: "mkdir", path: dirname(id) }, writeFileOp(id, source)];
     this.#interpreter = new PhpInterpreter(runtime, setup);
   }
 

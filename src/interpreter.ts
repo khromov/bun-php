@@ -144,7 +144,10 @@ export class PhpInterpreter {
     const instance = this.#instance;
     this.#instance = null;
     const php = await instance?.catch(() => null);
-    php?.exit();
+    // A runtime that is already exiting throws here, and `createPhpModule` discards this promise.
+    try {
+      php?.exit();
+    } catch {}
   }
 }
 

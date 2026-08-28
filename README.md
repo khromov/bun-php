@@ -295,8 +295,9 @@ bun add @php-wasm/node-8-3
 ```
 
 Each build is tens of megabytes of WebAssembly, which is why they aren't all bundled. Asking for one you
-haven't installed tells you which package to add. Each build picks the JSPI or asyncify variant itself; use
-`loader` to pin one:
+haven't installed throws `PhpBuildNotInstalledError`, naming the package to add; a build that is installed
+but won't load throws `PhpBuildLoadError` instead, with the real failure as its `cause`. Each build picks
+the JSPI or asyncify variant itself; use `loader` to pin one:
 
 ```ts
 createInterpreter({
@@ -326,13 +327,13 @@ Bun.build({
 });
 ```
 
-| Option     | Default     | Meaning                                                                                               |
-| ---------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `dts`      | `"auto"`    | Write sidecar types. `"auto"` writes unless producing a bundle.                                       |
-| `stdout`   | `"inherit"` | Where PHP's `echo` output goes: `"inherit"`, `"capture"` (drain with `php.$output()`), or `"ignore"`. |
-| `filter`   | `/\.php$/`  | Which files to handle.                                                                                |
-| `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve.                               |
-| `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.     |
+| Option     | Default     | Meaning                                                                                                   |
+| ---------- | ----------- | --------------------------------------------------------------------------------------------------------- |
+| `dts`      | `"auto"`    | Write sidecar types. `"auto"` writes unless producing a bundle.                                           |
+| `stdout`   | `"inherit"` | Where PHP's `echo` output goes: `"inherit"`, `"capture"` (drain with `php.$output()`), or `"ignore"`.     |
+| `filter`   | `/\.php$/`  | Which files to handle.                                                                                    |
+| `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve. `false` drops the autoloader too. |
+| `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.         |
 
 The `bun build` **CLI** can't use plugins at all — use the `Bun.build()` JS API, or
 `[serve.static] plugins = ["bun-php"]` for the dev server.
@@ -380,7 +381,8 @@ wasm abort takes only its own child.
 - **By-reference parameters (`&$x`) don't write back.** Arguments pass by value; the generated types carry a
   JSDoc warning.
 - **Only the project directory is mounted.** A `require` pointing outside the detected root won't resolve.
-  Set `mount: false` to opt out, leaving only the imported file's own source.
+  Set `mount: false` to opt out, leaving only the imported file's own source — the detected
+  `vendor/autoload.php` goes with it, since nothing outside the mount is reachable.
 - **No networking and no Xdebug.** Available extensions are whatever the php-wasm build ships: `mbstring`,
   `openssl`, `hash`, `bcmath`, `dom`, `tokenizer`, `gd`, `zip`, `curl`, `sqlite3` and friends. **`intl` is
   absent**, so packages requiring `ext-intl` won't load.
