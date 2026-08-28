@@ -349,25 +349,28 @@ describe("phpVersion", () => {
   });
 
   // Skipped where 8.1 is installed: the import below has to actually fail to resolve.
-  test.skipIf(isBuildInstalled("8.1"))("tells a broken build apart from a missing one", async () => {
-    // Both are real import failures: one cannot resolve, the other throws while evaluating.
-    // The specifiers go through variables so TypeScript does not try to resolve them itself.
-    const absent = "@php-wasm/node-8-1";
-    const throws = 'data:text/javascript,throw new TypeError("boom")';
-    const missing = await import(absent).catch((err: unknown) => err);
-    const broken = await import(throws).catch((err: unknown) => err);
+  test.skipIf(isBuildInstalled("8.1"))(
+    "tells a broken build apart from a missing one",
+    async () => {
+      // Both are real import failures: one cannot resolve, the other throws while evaluating.
+      // The specifiers go through variables so TypeScript does not try to resolve them itself.
+      const absent = "@php-wasm/node-8-1";
+      const throws = 'data:text/javascript,throw new TypeError("boom")';
+      const missing = await import(absent).catch((err: unknown) => err);
+      const broken = await import(throws).catch((err: unknown) => err);
 
-    const notInstalled = buildImportError("8.1", "@php-wasm/node-8-1", missing);
-    expect(notInstalled).toBeInstanceOf(PhpBuildNotInstalledError);
-    expect(notInstalled.message).toContain("bun add @php-wasm/node-8-1");
+      const notInstalled = buildImportError("8.1", "@php-wasm/node-8-1", missing);
+      expect(notInstalled).toBeInstanceOf(PhpBuildNotInstalledError);
+      expect(notInstalled.message).toContain("bun add @php-wasm/node-8-1");
 
-    // `bun add` cannot fix a package that is already there, so it must not be the advice.
-    const failedToLoad = buildImportError("8.1", "@php-wasm/node-8-1", broken);
-    expect(failedToLoad).toBeInstanceOf(PhpBuildLoadError);
-    expect(failedToLoad.message).toContain("is installed but failed to load");
-    expect(failedToLoad.message).not.toContain("bun add");
-    expect(failedToLoad.cause).toBe(broken);
-  });
+      // `bun add` cannot fix a package that is already there, so it must not be the advice.
+      const failedToLoad = buildImportError("8.1", "@php-wasm/node-8-1", broken);
+      expect(failedToLoad).toBeInstanceOf(PhpBuildLoadError);
+      expect(failedToLoad.message).toContain("is installed but failed to load");
+      expect(failedToLoad.message).not.toContain("bun add");
+      expect(failedToLoad.cause).toBe(broken);
+    },
+  );
 
   test(
     "loader takes precedence over phpVersion",
