@@ -312,6 +312,9 @@ dependency**, so you install the one you want:
 bun add @php-wasm/node-8-3
 ```
 
+Every build is covered by CI, which runs the compatibility suite against 8.0 through 8.5 on each pull
+request, so an optional peer is verified rather than merely declared.
+
 Each build is tens of megabytes of WebAssembly, which is why they aren't all bundled. Asking for one you
 haven't installed throws `PhpBuildNotInstalledError`, naming the package to add; a build that is installed
 but won't load throws `PhpBuildLoadError` instead, with the real failure as its `cause`. Each build picks

@@ -88,14 +88,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # --no-save leaves package.json and bun.lock alone, so the main job's assumption that 8.1 is
-      # absent still holds there. The package names use dashes, and GitHub expressions have no
-      # replace(), hence the shell substitution.
+      # The script puts package.json and bun.lock back afterwards, so the rest of the suite's
+      # "8.1 is not installed" assumption still holds in the other jobs. It exists because neither
+      # `bun add --no-save` nor a plain `bun add` installs a package that is already declared as an
+      # optional peer dependency -- both report success having installed nothing.
       - name: Install the build under test
         if: matrix.php != 'default'
-        env:
-          PHP: ${{ matrix.php }}
-        run: bun add --no-save "@php-wasm/node-${PHP//./-}"
+        run: bun run php-builds:install ${{ matrix.php }}
 
       - name: Verify the extra install left the manifest alone
         run: git diff --exit-code package.json bun.lock

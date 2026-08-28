@@ -15,6 +15,9 @@ bun install
 bun test                          # all tests
 bun test test/parse.test.ts       # one file
 bun test -t "variadic"            # one test by name
+bun run test:versions             # the cross-version compatibility suite (installed builds only)
+bun run php-builds:install        # install every @php-wasm/node-8-* build (~370 MB), then
+bun run php-builds:install 8.1    #   just one; both leave package.json and bun.lock untouched
 bun run example                   # example/index.ts against example/hello.php
 bun run demos                     # demos/index.ts against real Composer packages
 bun run typecheck                 # bunx tsc -p tsconfig.json (noEmit)
@@ -245,6 +248,25 @@ someone to install what they already have. Only 8.5 is a real dependency; the re
 peer dependencies, because each build is tens of MB of wasm. `@php-wasm/node` is deliberately avoided — it
 statically imports a NAN native addon that throws at module-evaluation time when its binding fails to load,
 which is also why `nodeFsMountHandler` is implemented here against the Emscripten FS directly.
+
+**Every build is tested, and installing one is not what you would guess.** `test/versions.test.ts`
+is the only cross-version coverage: it drives the real paths (module calls, marshalling, envelope
+ordering, errors, `cli()`, `ini`, mount, `isolation: "process"`) against each build, and CI runs it as a
+`php-versions` matrix of one build per job. `BUN_PHP_VERSIONS` names the targets; unset, it covers
+whichever builds are installed, so locally that is 8.3 and 8.5. An explicitly named version is never
+filtered out by the "is it installed" check — otherwise a job whose install step failed would pass on
+zero tests, which is exactly what the `build discovery` block guards. The sixth matrix leg is `default`,
+not `8.5`: it passes no `phpVersion` at all, so the `?? PHP_VERSION` fallback is what gets exercised.
+`test/fixtures/e2e.php` is that suite's fixture as well as the e2e one, so it has to stay PHP
+8.0-compatible — the 8.0 job enforces this, but a snippet with a deprecation notice on one build and not
+another will flake rather than fail cleanly.
+
+Installing a build needs `scripts/php-builds-install.ts`, because **both obvious commands silently do
+nothing**: `bun add --no-save` resolves the tree from package.json, where these are only optional peers,
+and a plain `bun add` skips a package that is already declared as one. The script strips the peer
+declaration first, runs a real `bun add`, and restores package.json and bun.lock — which is why the
+version job can install 8.1 without disturbing `test/interpreter.test.ts` and `test/isolation.test.ts`,
+whose three `skipIf(isBuildInstalled("8.1"))` tests still assume 8.1 is absent in every other job.
 
 **Neither timeouts nor parallelism work the way you would assume in-process**, both measured:
 

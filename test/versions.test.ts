@@ -9,10 +9,10 @@ import { join } from "node:path";
 import { PhpError, PhpFatalError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
 import { parsePhp } from "../src/parse";
-import { PHP_VERSION } from "../src/php-runtime";
+import { BUILD_PACKAGES, PHP_VERSION } from "../src/php-runtime";
 import { createPhpModule } from "../src/runtime";
 import type { PhpRuntimeOptions } from "../src/types";
-import { versionTargets } from "./php-builds";
+import { isBuildInstalled, versionTargets } from "./php-builds";
 
 const BOOT_MS = 30_000;
 
@@ -31,7 +31,33 @@ const SOURCE = await Bun.file(FIXTURE).text();
 const META = parsePhp(SOURCE, FIXTURE);
 const FUNCTIONS = Object.fromEntries(META.functions.map((f) => [f.exportName, f.phpName]));
 
-for (const { label, version } of versionTargets()) {
+const TARGETS = versionTargets();
+
+describe("build discovery", () => {
+  test("every explicitly requested build is installed", () => {
+    // Without this a CI job whose install step failed would pass on zero tests instead of
+    // reporting that the build it was asked to cover never arrived.
+    const missing = TARGETS.filter((t) => t.version && !isBuildInstalled(t.version));
+    expect(missing.map((t) => t.label)).toEqual([]);
+  });
+
+  test("there is at least one build to cover", () => {
+    expect(TARGETS.length).toBeGreaterThan(0);
+  });
+
+  test("the CI matrix covers every version bun-php claims to support", async () => {
+    // A version added to BUILD_PACKAGES but not to the matrix would never be exercised, and
+    // nothing else would say so.
+    const workflow = await Bun.file(join(import.meta.dir, "../.github/workflows/test.yml")).text();
+    const line = /^\s*php: \[(.*)\]$/m.exec(workflow);
+    const matrix = line?.[1]!.split(",").map((entry) => entry.trim().replace(/"/g, ""));
+    // "default" stands in for PHP_VERSION, so the fallback is covered instead of duplicated.
+    const wanted = Object.keys(BUILD_PACKAGES).filter((v) => v !== PHP_VERSION);
+    expect(matrix).toEqual([...wanted, "default"]);
+  });
+});
+
+for (const { label, version } of TARGETS) {
   // What PHP should report: an explicit build, or the default the runtime falls back to.
   const expected = version ?? PHP_VERSION;
   const runtime = version ? { phpVersion: version } : {};
