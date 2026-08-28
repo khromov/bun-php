@@ -124,8 +124,8 @@ describe("streaming output", () => {
 describe("runtime.timeoutMs", () => {
   test("does not count the wasm boot against the first call", async () => {
     // Booting costs 100-800ms cold, which no caller can influence; charging it to the deadline made
-    // the first call reject and the retry succeed. The loader is slowed so the boot alone would
-    // blow a 200ms budget however warm the wasm cache happens to be.
+    // the first call reject and the retry succeed. The loader is slowed so the boot alone outlasts
+    // the budget however warm the wasm cache is, while leaving the call itself room on a slow runner.
     const module = createPhpModule({
       id: "/virtual/timeout-cold.php",
       source: "<?php\n",
@@ -133,9 +133,9 @@ describe("runtime.timeoutMs", () => {
       meta,
       stdout: "ignore",
       runtime: {
-        timeoutMs: 200,
+        timeoutMs: 400,
         loader: async () => {
-          await Bun.sleep(600);
+          await Bun.sleep(1000);
           return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
         },
       },

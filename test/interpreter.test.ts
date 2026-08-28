@@ -274,7 +274,10 @@ describe("phpVersion", () => {
 
       await php.dispose();
       expect(php.retired).toBe(false);
-      expect((await php.cli(["php", "-r", "echo 'healthy';"])).stdout).toBe("healthy");
+      // Untimed: the abandoned loop still holds the wasm, so this call waits for it, and the
+      // interpreter's own 200ms deadline would fire on a slow runner before it ever starts.
+      const recovered = await php.cli(["php", "-r", "echo 'healthy';"], { timeoutMs: 0 });
+      expect(recovered.stdout).toBe("healthy");
       await php.dispose();
     },
     BOOT_MS,
@@ -345,7 +348,8 @@ describe("phpVersion", () => {
     expect(error.message).not.toContain("bun add");
   });
 
-  test("tells a broken build apart from a missing one", async () => {
+  // Skipped where 8.1 is installed: the import below has to actually fail to resolve.
+  test.skipIf(isBuildInstalled("8.1"))("tells a broken build apart from a missing one", async () => {
     // Both are real import failures: one cannot resolve, the other throws while evaluating.
     // The specifiers go through variables so TypeScript does not try to resolve them itself.
     const absent = "@php-wasm/node-8-1";
