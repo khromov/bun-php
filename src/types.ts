@@ -62,6 +62,15 @@ export interface PhpModuleApi {
   readonly $meta: PhpModuleMeta;
 }
 
+/**
+ * What an imported `.php` module can carry: `PhpRuntimeOptions` minus everything that cannot survive
+ * `JSON.stringify` into generated source, and minus `isolation`, which `createPhpModule` refuses.
+ */
+export type PhpModuleRuntimeOptions = Omit<PhpRuntimeOptions, "loader" | "isolation" | "spawn"> & {
+  /** Only `"refuse"`; a handler function cannot cross into generated source. */
+  spawn?: "refuse";
+};
+
 export interface PhpPluginOptions {
   /** Write a sidecar `<file>.php.d.ts`. `"auto"` (default) writes only when not producing a bundle. */
   dts?: boolean | "auto";
@@ -74,6 +83,8 @@ export interface PhpPluginOptions {
   mount?: boolean;
   /** File to require before the module. Defaults to a detected `vendor/autoload.php`; `false` disables. */
   autoload?: string | false;
+  /** Interpreter options for every module this plugin loads. Must survive JSON; see the type. */
+  runtime?: PhpModuleRuntimeOptions;
 }
 
 /** Versions with a `@php-wasm/node-X-Y` build package. */

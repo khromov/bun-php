@@ -3,6 +3,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { phpPlugin } from "../src/plugin";
+import type { PhpPluginOptions } from "../src/types";
 import { createPhpModule } from "../src/runtime";
 import { parsePhp } from "../src/parse";
 
@@ -60,7 +61,7 @@ describe("onLoad", () => {
     const file = join(dir, "broken.php");
     await Bun.write(file, "<?php function {");
 
-    expect(runOnLoad(phpPlugin(), file)).rejects.toThrow(/syntax error/i);
+    await expect(runOnLoad(phpPlugin(), file)).rejects.toThrow(/syntax error/i);
   });
 });
 
@@ -196,6 +197,44 @@ describe("mount: false", () => {
     expect(await mod.inlined()).toBe("from inlined source");
     await mod.default.$dispose();
   }, 30_000);
+});
+
+describe("runtime options", () => {
+  test("reach the interpreter behind an imported module", async () => {
+    const dir = await scratch();
+    const file = join(dir, "ini.php");
+    await Bun.write(file, `<?php function limit(): string { return ini_get('memory_limit'); }`);
+
+    const plugin = phpPlugin({ runtime: { phpVersion: "8.5", ini: { memory_limit: "123M" } } });
+    const { contents } = await runOnLoad(plugin, file);
+    expect(contents).toContain(`runtime: {"phpVersion":"8.5","ini":{"memory_limit":"123M"}},`);
+
+    // Only loading the generated module shows whether the option survived the trip.
+    const entry = join(dir, "ini.mjs");
+    await Bun.write(entry, contents as string);
+    const mod = await import(entry);
+
+    expect(await mod.limit()).toBe("123M");
+    await mod.default.$dispose();
+  }, 30_000);
+
+  test("are omitted entirely when unset", async () => {
+    const dir = await scratch();
+    const file = join(dir, "plain.php");
+    await Bun.write(file, SAMPLE);
+
+    const { contents } = await runOnLoad(phpPlugin(), file);
+    expect(contents).not.toContain("runtime:");
+  });
+
+  test("refuse anything that cannot cross into generated source", () => {
+    const bad = (runtime: unknown) => () => phpPlugin({ runtime } as PhpPluginOptions);
+    expect(bad({ loader: async () => ({}) })).toThrow(/runtime\.loader/);
+    expect(bad({ spawn: () => ({}) })).toThrow(/runtime\.spawn/);
+    expect(bad({ isolation: "process" })).toThrow(/runtime\.isolation/);
+    // The serialisable ones are fine.
+    expect(bad({ phpVersion: "8.3", spawn: "refuse", timeoutMs: 10 })).not.toThrow();
+  });
 });
 
 describe("stdout modes", () => {

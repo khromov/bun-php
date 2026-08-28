@@ -4,7 +4,7 @@ import { generateModule } from "./codegen";
 import { generateDts } from "./dts";
 import { parsePhp } from "./parse";
 import { resolveProject } from "./project";
-import type { PhpModuleMeta, PhpPluginOptions } from "./types";
+import type { PhpModuleMeta, PhpModuleRuntimeOptions, PhpPluginOptions } from "./types";
 
 // Generated code imports the runtime by absolute path rather than `bun-php/runtime`, so it resolves
 // the same whether bun-php is a dependency, a link, or this repository.
@@ -18,6 +18,7 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
   const stdout = options.stdout ?? "inherit";
   const dts = options.dts ?? "auto";
   const mount = options.mount ?? true;
+  const runtime = options.runtime && assertSerialisable(options.runtime);
 
   return {
     name: "bun-php",
@@ -47,6 +48,7 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
             stdout,
             root: mount ? project.root : null,
             autoload: project.autoload,
+            runtime,
           }),
           loader: "js",
           resolveDir: dirname(path),
@@ -54,6 +56,20 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
       });
     },
   };
+}
+
+// The options reach the module as generated source, so anything a function or a live object cannot
+// cross. TypeScript rules these out already; this is the guard for JavaScript callers.
+function assertSerialisable(runtime: PhpModuleRuntimeOptions): PhpModuleRuntimeOptions {
+  const offending = ["loader", "isolation"].filter((key) => key in runtime);
+  if (typeof (runtime as { spawn?: unknown }).spawn === "function") offending.push("spawn");
+  if (offending.length > 0) {
+    throw new TypeError(
+      `phpPlugin: runtime.${offending.join(", runtime.")} cannot cross into a generated module; ` +
+        "use createInterpreter, or createPhpModule from bun-php/runtime",
+    );
+  }
+  return runtime;
 }
 
 // Skipped when unchanged: rewriting churns the mtime and retriggers `bun --watch`/`--hot` in a loop.

@@ -160,6 +160,11 @@ for a PHP name, and `exportLines` turns that into either a direct export or an a
 `codegen.ts`, `dts.ts` and the uniqueness guard in `parse.ts` all go through them so they cannot drift.
 `parse.ts` also reserves the generated module's own identifiers (`__mod`, `createPhpModule`, `_default`,
 `default`), skipping any PHP name that would collide — `define()` accepts names a `const` declaration cannot.
+Separately, `API_NAME` in `codegen.ts` is the one name (`call`) a PHP function shares with the module
+API: the function stays a named export, but `dts.ts` leaves it off the `_default` block and both
+generators emit a "Named export only" trailer, because a second `call` key is a TS2717 and at runtime the
+API wins anyway — which is why `createPhpModule` lists `call` _after_ the function spread. Every other API
+member is `$`-prefixed and a PHP function name cannot start with `$`, so `call` is the whole list.
 `RESERVED` in `codegen.ts` is _ECMAScript's_ invalid-binding list (reserved words + strict-mode additions +
 `arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
 transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,
@@ -171,6 +176,12 @@ across refactors: `example/hello.php.d.ts` and `demos/php/*.php.d.ts` are commit
 share the one map; `convertDocPart` handles the docblock syntax around them). The precedence rule lives in
 `chooseType` in `parse.ts`: a real type declaration wins, _except_ that bare `array` and `mixed` defer to a
 `@param`/`@return` docblock tag.
+
+**The plugin's `runtime` option is the serialisable half of `PhpRuntimeOptions`.** It is emitted into the
+generated module by `generateModule`, so `PhpModuleRuntimeOptions` drops `loader` and function-valued
+`spawn` (neither survives `JSON.stringify`) and `isolation` (which `createPhpModule` refuses outright);
+`assertSerialisable` in `plugin.ts` repeats that check for JavaScript callers. The key is omitted entirely
+when unset, so a module without runtime options generates byte-identically to before.
 
 **PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
 `@php-wasm/node-X-Y` resolved with a dynamic `import()`. `buildImportError` classifies a failed import

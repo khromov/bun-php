@@ -29,6 +29,7 @@ export type {
   PhpLoaderModule,
   PhpModuleApi,
   PhpModuleMeta,
+  PhpModuleRuntimeOptions,
   PhpMount,
   PhpParamMeta,
   PhpPluginOptions,

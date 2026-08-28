@@ -185,7 +185,8 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
 
   return {
     // Every PHP function on the default export too. Spread defines own properties, so a PHP
-    // function named `toString` shadows Object.prototype instead of being skipped.
+    // function named `toString` shadows Object.prototype instead of being skipped. `call` is
+    // listed after the spread on purpose: the API owns that name, and the sidecar says so.
     ...Object.fromEntries(
       Object.keys(functions).map((name) => [name, (...args: unknown[]) => call(name, args)]),
     ),

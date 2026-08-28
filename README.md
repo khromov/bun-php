@@ -334,6 +334,15 @@ Bun.build({
 | `filter`   | `/\.php$/`  | Which files to handle.                                                                                    |
 | `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve. `false` drops the autoloader too. |
 | `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.         |
+| `runtime`  | -           | Interpreter options for every module loaded: `phpVersion`, `ini`, `mounts`, `spawn`, `timeoutMs`.         |
+
+`runtime` reaches the module as generated source, so it takes only what survives JSON: `loader`, a
+`spawn` handler function and `isolation` are rejected up front. Reach for `createInterpreter` when you
+need those.
+
+```ts
+phpPlugin({ runtime: { phpVersion: "8.3", ini: { memory_limit: "256M" } } });
+```
 
 The `bun build` **CLI** can't use plugins at all — use the `Bun.build()` JS API, or
 `[serve.static] plugins = ["bun-php"]` for the dev server.

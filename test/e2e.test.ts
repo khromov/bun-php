@@ -125,7 +125,7 @@ describe("reserved words", () => {
 
 describe("errors", () => {
   test("a PHP exception becomes a PhpError carrying its class", async () => {
-    expect(boom()).rejects.toThrow(PhpError);
+    await expect(boom()).rejects.toThrow(PhpError);
     try {
       await boom();
       throw new Error("should have thrown");
@@ -140,7 +140,7 @@ describe("errors", () => {
   });
 
   test("calling an undefined function rejects", async () => {
-    expect(php.call("no_such_function", [])).rejects.toThrow();
+    await expect(php.call("no_such_function", [])).rejects.toThrow(/no_such_function/);
   });
 
   test("exit() becomes a PhpFatalError rather than hanging", async () => {

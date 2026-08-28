@@ -174,6 +174,6 @@ describe("isolation: 'process'", () => {
 
   test("php() has no instance to hand back", async () => {
     const php = createInterpreter({ isolation: "process" });
-    expect(php.php()).rejects.toThrow("isolation");
+    await expect(php.php()).rejects.toThrow("isolation");
   });
 });

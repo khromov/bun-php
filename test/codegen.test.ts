@@ -168,6 +168,18 @@ describe("generated .d.ts", () => {
     expect(dts).toContain("type PhpArray =");
   });
 
+  test("a PHP function named call stays a named export only", () => {
+    // The API's own `call(name, args)` holds that key; a second one is TS2717, and at runtime the
+    // API wins anyway, so the default export must not claim to carry the PHP function.
+    const { dts, js } = build(`function call(string $a): string {}`);
+    expect(dts).toContain("export declare function call(a: string): Promise<string>;");
+    expect(dts).not.toContain("call: typeof call;");
+    expect(dts).toContain(
+      "// Named export only (the module API owns `call` on the default export):",
+    );
+    expect(js).toContain("export const call = (...args) =>");
+  });
+
   test("types the default export the way PhpModuleApi does", () => {
     // A .php import resolves to the sidecar, so anything missing here is untypeable for the caller.
     const { dts } = build(`function f(): void {}`);

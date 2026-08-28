@@ -1,8 +1,8 @@
-test/fixtures/_.php.d.ts
-demos/php/_.php.d.ts
+test/fixtures/*.php.d.ts
+demos/php/*.php.d.ts
 demos/images/
-_.png
-_.zip
+*.png
+*.zip
 CHANGELOG.md
 .release-please-manifest.json
 release-please-config.json

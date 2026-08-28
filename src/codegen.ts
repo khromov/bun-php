@@ -1,4 +1,4 @@
-import type { PhpModuleMeta, StdoutMode } from "./types";
+import type { PhpModuleMeta, PhpModuleRuntimeOptions, StdoutMode } from "./types";
 
 // ECMAScript's invalid-binding list (reserved words, the strict-mode additions, `arguments` and
 // `eval`), not PHP's: `define()` can hand codegen any name, and every one of these is still a legal
@@ -34,6 +34,18 @@ export function exportLines(
   return [declare(binding), `export { ${binding} as ${JSON.stringify(name)} };`];
 }
 
+/**
+ * The only API name a PHP function can collide with on the default export; the rest are `$`-prefixed,
+ * and a PHP function name cannot start with `$`.
+ */
+export const API_NAME = "call";
+
+/** The trailer for the one function the default export cannot carry, which is still a named export. */
+export function apiOnlyLines(meta: PhpModuleMeta): string[] {
+  if (!meta.functions.some((fn) => fn.exportName === API_NAME)) return [];
+  return ["", `// Named export only (the module API owns \`${API_NAME}\` on the default export):`];
+}
+
 /** The trailer both generated files end with. */
 export function skippedLines(meta: PhpModuleMeta): string[] {
   if (meta.skipped.length === 0) return [];
@@ -52,11 +64,13 @@ export interface CodegenOptions {
   root: string | null;
   /** Composer autoloader to require before the module, if any. */
   autoload: string | null;
+  /** Interpreter options for the module, if any. Emitted verbatim, so it must survive JSON. */
+  runtime?: PhpModuleRuntimeOptions;
 }
 
 /** The JavaScript module a `.php` import resolves to. */
 export function generateModule(options: CodegenOptions): string {
-  const { path, source, meta, runtimeSpecifier, stdout, root, autoload } = options;
+  const { path, source, meta, runtimeSpecifier, stdout, root, autoload, runtime } = options;
   const functions = Object.fromEntries(meta.functions.map((fn) => [fn.exportName, fn.phpName]));
 
   const lines = [
@@ -71,6 +85,8 @@ export function generateModule(options: CodegenOptions): string {
     `  stdout: ${JSON.stringify(stdout)},`,
     `  root: ${JSON.stringify(root)},`,
     `  autoload: ${JSON.stringify(autoload)},`,
+    // Omitted when unset, so a module without runtime options generates exactly what it always did.
+    ...(runtime ? [`  runtime: ${JSON.stringify(runtime)},`] : []),
     "});",
     "",
     "export default __mod;",
@@ -92,5 +108,5 @@ export function generateModule(options: CodegenOptions): string {
     );
   }
 
-  return [...lines, ...skippedLines(meta)].join("\n") + "\n";
+  return [...lines, ...apiOnlyLines(meta), ...skippedLines(meta)].join("\n") + "\n";
 }

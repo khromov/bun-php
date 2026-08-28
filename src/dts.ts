@@ -1,4 +1,11 @@
-import { bindingNameFor, exportLines, isBindableIdentifier, skippedLines } from "./codegen";
+import {
+  API_NAME,
+  apiOnlyLines,
+  bindingNameFor,
+  exportLines,
+  isBindableIdentifier,
+  skippedLines,
+} from "./codegen";
 import { parenthesised } from "./php-types";
 import type { PhpFunctionMeta, PhpModuleMeta, PhpValue } from "./types";
 
@@ -31,6 +38,8 @@ export function generateDts(meta: PhpModuleMeta, sourceName: string): string {
       ...exportLines(fn.exportName, "function", (b) => `declare function ${b}${signature};`),
       "",
     );
+    // The API's own `call(name, args)` already holds this key, and a duplicate would not typecheck.
+    if (fn.exportName === API_NAME) continue;
     const binding = bindingNameFor(fn.exportName, "function");
     const key = binding === fn.exportName ? binding : JSON.stringify(fn.exportName);
     onDefault.push(`  ${key}: typeof ${binding};`);
@@ -69,7 +78,7 @@ export function generateDts(meta: PhpModuleMeta, sourceName: string): string {
     "export default _default;",
   );
 
-  return [...lines, ...skippedLines(meta)].join("\n") + "\n";
+  return [...lines, ...apiOnlyLines(meta), ...skippedLines(meta)].join("\n") + "\n";
 }
 
 function renderParams(fn: PhpFunctionMeta): string {
