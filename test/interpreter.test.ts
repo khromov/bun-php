@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PhpTimeoutError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
 import { buildImportError, PhpBuildLoadError, PhpBuildNotInstalledError } from "../src/php-runtime";
+import { isBuildInstalled } from "./php-builds";
 
 const BOOT_MS = 30_000;
 
@@ -322,9 +323,10 @@ describe("phpVersion", () => {
     BOOT_MS,
   );
 
-  test("names the package a missing build needs", async () => {
+  // Skipped rather than failed where 8.1 *is* installed: the version matrix job installs it, and
+  // so does anyone who ran `bun run php-builds:install`.
+  test.skipIf(isBuildInstalled("8.1"))("names the package a missing build needs", async () => {
     const php = createInterpreter({ phpVersion: "8.1" });
-    // 8.1 is not among this project's devDependencies, so the import fails.
     const error = await php.cli(["php", "-v"]).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(PhpBuildNotInstalledError);
     expect((error as Error).message).toContain("@php-wasm/node-8-1");

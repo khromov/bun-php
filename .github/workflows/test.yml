@@ -59,13 +59,61 @@ jobs:
       - name: Run tests
         run: bun run test
 
+  # The 8.0-8.4 builds are optional peer dependencies, so each runner installs only the one it
+  # tests; "default" installs nothing extra and exercises the built-in version fallback instead.
+  php-versions:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.0", "8.1", "8.2", "8.3", "8.4", "default"]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # --no-save leaves package.json and bun.lock alone, so the main job's assumption that 8.1 is
+      # absent still holds there. The package names use dashes, and GitHub expressions have no
+      # replace(), hence the shell substitution.
+      - name: Install the build under test
+        if: matrix.php != 'default'
+        env:
+          PHP: ${{ matrix.php }}
+        run: bun add --no-save "@php-wasm/node-${PHP//./-}"
+
+      - name: Verify the extra install left the manifest alone
+        run: git diff --exit-code package.json bun.lock
+
+      # BUN_PHP_VERSIONS names the build explicitly, so a failed install fails the suite rather
+      # than quietly reducing it to zero tests.
+      - name: Run the compatibility suite
+        env:
+          BUN_PHP_VERSIONS: ${{ matrix.php }}
+        run: bun run test:versions
+
   # Single job the branch protection rule can require, regardless of how the
   # matrix grows.
   test:
     if: always()
-    needs: test-matrix
+    needs: [test-matrix, php-versions]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all matrix jobs passed
-        if: needs.test-matrix.result != 'success'
+        if: needs.test-matrix.result != 'success' || needs.php-versions.result != 'success'
         run: exit 1

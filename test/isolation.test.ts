@@ -7,6 +7,7 @@ import { createInterpreter } from "../src/interpreter";
 import { PhpError } from "../src/errors";
 import { killedByDeadline, readReply, reviveError, serialiseError } from "../src/isolation";
 import { PhpBuildNotInstalledError } from "../src/php-runtime";
+import { isBuildInstalled } from "./php-builds";
 
 const BOOT_MS = 30_000;
 
@@ -182,7 +183,8 @@ describe("isolation: 'process'", () => {
 });
 
 describe("errors crossing the boundary", () => {
-  test("keep their class and fields", async () => {
+  // Skipped where 8.1 is installed; see the twin in test/interpreter.test.ts.
+  test.skipIf(isBuildInstalled("8.1"))("keep their class and fields", async () => {
     // A plain Error loses instanceof, packageName and the cause that explains what really failed.
     const php = createInterpreter({ phpVersion: "8.1", isolation: "process" });
     const error = await php.cli(["php", "-v"]).catch((err: unknown) => err);
