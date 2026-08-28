@@ -62,10 +62,11 @@ jobs:
   # The 8.0-8.4 builds are optional peer dependencies, so each runner installs only the one it
   # tests; "default" installs nothing extra and exercises the built-in version fallback instead.
   php-versions:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         php: ["8.0", "8.1", "8.2", "8.3", "8.4", "default"]
 
     steps:
