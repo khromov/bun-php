@@ -116,7 +116,11 @@ function readFunction(node: Node, namespace: string): PhpFunctionMeta {
     const paramName = identifierName(param.name) ?? "arg";
     return {
       name: paramName,
-      tsType: chooseType(param.type, Boolean(param.nullable), doc?.params.get(paramName)),
+      tsType: chooseType(
+        param.type,
+        Boolean(param.nullable),
+        elementType(doc?.params.get(paramName), Boolean(param.variadic)),
+      ),
       optional: param.value != null,
       variadic: Boolean(param.variadic),
       byref: Boolean(param.byref),
@@ -130,6 +134,16 @@ function readFunction(node: Node, namespace: string): PhpFunctionMeta {
     returnTsType: chooseType(node.type, Boolean(node.nullable), doc?.returns),
     doc: doc?.summary ?? null,
   };
+}
+
+/**
+ * A variadic collects its arguments into an array, so `@param string[] $args` describes the whole
+ * array while PSR-5's `@param string ...$args` describes one element. Both mean `...args: string[]`,
+ * and `renderParams` appends the `[]`, so the array spelling gives up one level here.
+ */
+function elementType(documented: string | null | undefined, variadic: boolean): string | null {
+  if (!documented || !variadic) return documented ?? null;
+  return documented.endsWith("[]") ? documented.slice(0, -2) || null : documented;
 }
 
 /** A declared type wins over the docblock, except bare `array`/`mixed`, which say less than `@param float[]`. */
@@ -165,17 +179,21 @@ function readDocblock(node: Node): Docblock | null {
   const summary: string[] = [];
   const params = new Map<string, string>();
   let returns: string | null = null;
+  let tagged = false;
 
   for (const line of lines) {
     const tag = /^@(\w+)\s+(.*)$/.exec(line);
     if (!tag) {
-      if (params.size === 0 && returns === null) summary.push(line);
+      // Any tag ends the summary, even one nobody reads: what follows is that tag's continuation.
+      if (!tagged) summary.push(line);
       continue;
     }
+    tagged = true;
     const [, name, body = ""] = tag;
     if (name === "param") {
       const { type, rest } = readType(body);
-      const varName = /^\$(\w+)/.exec(rest.trim())?.[1];
+      // PSR-5 writes a variadic as `...$args`, which a bare `$name` pattern would drop silently.
+      const varName = /^(?:\.\.\.)?\$(\w+)/.exec(rest.trim())?.[1];
       if (type && varName) params.set(varName, type);
     } else if (name === "return" && returns === null) {
       returns = readType(body).type || null;

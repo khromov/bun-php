@@ -163,7 +163,11 @@ describe("open and close tags", () => {
 
   test("a closing tag inside a comment or heredoc is not a mode switch", async () => {
     expect(await BunPHP`/* ?> */ return 1;`).toBe(1);
-    expect(await BunPHP`return <<<'EOT'\n?>\nEOT;`).toBe("?>");
+    expect(
+      await BunPHP`return <<<'EOT'
+?>
+EOT;`,
+    ).toBe("?>");
   });
 });
 
@@ -208,6 +212,31 @@ describe("asClosureBody", () => {
   test("ignores tags inside a heredoc or nowdoc", () => {
     expect(asClosureBody(`return <<<'EOT'\n?>\nEOT;`)).toBe(`return <<<'EOT'\n?>\nEOT;`);
     expect(asClosureBody(`return <<<EOT\n<?php\n  EOT;`)).toBe(`return <<<EOT\n<?php\n  EOT;`);
+  });
+});
+
+describe("raw template segments", () => {
+  test("JavaScript does not eat the snippet's escapes", async () => {
+    // Cooked strings turn `\d` into `d`, silently breaking every regex in an inline snippet.
+    expect(await BunPHP`return preg_match("/\d+/", "abc123");`).toBe(1);
+    expect(await BunPHP`return "\\" . "d";`).toBe("\\d");
+  });
+
+  test("PHP applies its own quoting rules, not JavaScript's", async () => {
+    // Single quotes keep the backslash in PHP; double quotes expand it. Cooked did both the same.
+    expect(await BunPHP`return 'a\tb';`).toBe("a\\tb");
+    expect(await BunPHP`return "a\tb";`).toBe("a\tb");
+  });
+
+  test("a namespace separator survives", async () => {
+    // PHP leaves `\D` alone inside double quotes; JavaScript's cooked strings did not.
+    expect(await BunPHP`return "\DateTimeImmutable";`).toBe("\\DateTimeImmutable");
+    expect(await BunPHP`return get_class(new \DateTimeImmutable());`).toBe("DateTimeImmutable");
+  });
+
+  test("an invalid JavaScript escape does not erase the snippet", async () => {
+    // A cooked segment is `undefined` here, and `?? ""` used to drop the whole snippet, returning null.
+    expect(await BunPHP`return "C:\uwhoops";`).toBe("C:\\uwhoops");
   });
 });
 

@@ -179,7 +179,8 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
 
   // Async so an argument that cannot be encoded rejects rather than throws.
   const call = async (name: string, args: readonly unknown[]): Promise<unknown> => {
-    const phpName = functions[name] ?? name;
+    // Own properties only: `functions.toString` would otherwise hand PHP a native function object.
+    const phpName = Object.hasOwn(functions, name) ? functions[name]! : name;
     return instance.run(`\\${phpName}(${encodeArgs(args, phpName)})`, phpName);
   };
 

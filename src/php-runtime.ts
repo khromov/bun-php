@@ -51,8 +51,12 @@ export function buildImportError(
   packageName: string,
   cause: unknown,
 ): PhpBuildNotInstalledError | PhpBuildLoadError {
-  const code = (cause as { code?: unknown } | null | undefined)?.code;
-  return code === "ERR_MODULE_NOT_FOUND"
+  const { code, specifier } = (cause ?? {}) as { code?: unknown; specifier?: unknown };
+  // A transitive dependency failing to resolve is a broken build, not a missing one, so `bun add`
+  // would be useless advice; only the build package's own specifier earns it.
+  const missingBuild =
+    code === "ERR_MODULE_NOT_FOUND" && (specifier ?? packageName) === packageName;
+  return missingBuild
     ? new PhpBuildNotInstalledError(phpVersion, packageName, cause)
     : new PhpBuildLoadError(phpVersion, packageName, cause);
 }

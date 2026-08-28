@@ -75,8 +75,9 @@ export class PhpInterpreter {
     }
     // Boot before recording: a boot replays the journal, so recording first would run the op twice.
     const php = await this.php();
-    this.#journal.push(op);
+    // And record only after it applied, or a rejected op still replays onto every later boot.
     await applyOp(php, op);
+    this.#journal.push(op);
   }
 
   /** Run PHP as `php script.php --flag` would; `argv[0]` is the binary name. Output is buffered whole. */

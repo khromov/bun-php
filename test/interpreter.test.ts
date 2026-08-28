@@ -239,6 +239,29 @@ describe("phpVersion", () => {
   );
 
   test(
+    "an op that fails is not recorded in the journal",
+    async () => {
+      // Recorded regardless, it replays onto every later boot: the caller is told the mount failed
+      // while it quietly breaks every call that follows.
+      const php = createInterpreter();
+      try {
+        const failed = await php.mount("/definitely/not/a/real/host/path", "/mnt").then(
+          () => null,
+          (err: unknown) => err ?? new Error("rejected with a falsy value"),
+        );
+        expect(failed).not.toBeNull();
+
+        // The first call reuses the instance the mount booted; the second boots afresh and replays.
+        expect((await php.cli(["php", "-r", "echo 1;"])).stdout).toBe("1");
+        expect((await php.cli(["php", "-r", "echo 2;"])).stdout).toBe("2");
+      } finally {
+        await php.dispose();
+      }
+    },
+    BOOT_MS,
+  );
+
+  test(
     "dispose survives a runtime that throws on exit",
     async () => {
       // createPhpModule discards this promise (`void cached.dispose()`), so a rejection here
@@ -266,6 +289,17 @@ describe("phpVersion", () => {
     expect((error as Error).message).toContain("@php-wasm/node-8-1");
     expect((error as Error).message).toContain("not installed");
     expect((error as Error).cause).toBeDefined();
+  });
+
+  test("a transitive resolution failure is not blamed on the build package", async () => {
+    // `bun add @php-wasm/node-8-5` cannot fix a dependency *inside* an installed build.
+    const throws = 'data:text/javascript,await import("totally-not-installed-xyz")';
+    const transitive = await import(throws).catch((err: unknown) => err);
+    expect((transitive as { code?: string }).code).toBe("ERR_MODULE_NOT_FOUND");
+
+    const error = buildImportError("8.5", "@php-wasm/node-8-5", transitive);
+    expect(error).toBeInstanceOf(PhpBuildLoadError);
+    expect(error.message).not.toContain("bun add");
   });
 
   test("tells a broken build apart from a missing one", async () => {

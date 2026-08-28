@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PhpTimeoutError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
+import { readReply } from "../src/isolation";
 
 const BOOT_MS = 30_000;
 
@@ -175,5 +176,38 @@ describe("isolation: 'process'", () => {
   test("php() has no instance to hand back", async () => {
     const php = createInterpreter({ isolation: "process" });
     await expect(php.php()).rejects.toThrow("isolation");
+  });
+});
+
+describe("reading the child's reply", () => {
+  const good = JSON.stringify({ ok: true, result: { stdout: "x", stderr: "", exitCode: 0 } });
+
+  test("a normal reply comes back", () => {
+    expect(readReply(good, "", 0)).toEqual({ stdout: "x", stderr: "", exitCode: 0 });
+  });
+
+  test("a crash surfaces the child's stderr", () => {
+    expect(() => readReply("", "wasm aborted", 1)).toThrow("wasm aborted");
+  });
+
+  test("exiting 0 without a reply names bun-php and quotes the stray output", () => {
+    // A bare `SyntaxError: Unexpected identifier` says nothing about which process wrote what.
+    const error = (() => {
+      try {
+        readReply("stray line from some dependency\n", "and some stderr", 0);
+      } catch (err) {
+        return err as Error;
+      }
+      throw new Error("should have thrown");
+    })();
+
+    expect(error).not.toBeInstanceOf(SyntaxError);
+    expect(error.message).toContain("isolation runner exited 0 without a usable reply");
+    expect(error.message).toContain("stray line from some dependency");
+    expect(error.message).toContain("and some stderr");
+  });
+
+  test("empty stdout is reported the same way", () => {
+    expect(() => readReply("", "", 0)).toThrow(/exited 0 without a usable reply/);
   });
 });

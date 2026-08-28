@@ -129,6 +129,16 @@ await BunPHP`<?php return array_sum(${[1, 2, 3, 4]});`; // 10
 await BunPHP`<?php return "Hello ${name}";`; // literal text, not the value
 ```
 
+The snippet is read from the template's **raw** segments, so escapes are PHP's rather than JavaScript's —
+`preg_match('/\d+/', ...)` keeps its `\d`, and `\DateTime` keeps its backslash. Write real newlines rather
+than `\n` when you want one:
+
+```ts
+await BunPHP`return preg_match("/\d+/", "abc123");`; // 1
+await BunPHP`return 'a\tb';`; // "a\tb" - single quotes, so PHP keeps the backslash
+await BunPHP`return "a\tb";`; // "a<tab>b" - PHP expands it, not JavaScript
+```
+
 Inline PHP is a plain runtime API: it needs no plugin registration and no `preload` entry. Both tags share
 one interpreter, each snippet runs as its own PHP request, and `BunPHP.dispose()` shuts it down.
 
@@ -385,7 +395,8 @@ wasm abort takes only its own child.
 
 - **ESM only.** `.php` modules can't be loaded with `require()`.
 - **Values cross by JSON.** Integers beyond `Number.MAX_SAFE_INTEGER` lose precision; resources and closures
-  can't be returned; objects arrive as their public properties. PHP list arrays become JS arrays,
+  can't be returned; objects arrive as their public properties. `NaN` and `Infinity` cross as whole
+  arguments only — nested in an array or object they throw rather than silently arriving as `null`. PHP list arrays become JS arrays,
   associative arrays become objects, and JS objects arrive in PHP as associative arrays (not `stdClass`).
 - **By-reference parameters (`&$x`) don't write back.** Arguments pass by value; the generated types carry a
   JSDoc warning.

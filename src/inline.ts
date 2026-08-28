@@ -21,11 +21,17 @@ function sharedModule(): PhpModuleApi {
   }));
 }
 
-// Values become PHP expressions, never text, so a value can never run as code.
+/**
+ * Values become PHP expressions, never text, so a value can never run as code. The segments come
+ * from `raw`: the snippet is PHP source, and cooked strings let JavaScript eat its escapes first,
+ * which silently turns `preg_match('/\d+/')` into `/d+/` and `\DateTime` into `DateTime`. A raw
+ * segment is also never `undefined`, so an invalid escape can no longer erase the whole snippet.
+ */
 function fillTemplate(strings: TemplateStringsArray, values: unknown[]): string {
-  let code = strings[0] ?? "";
+  const segments = strings.raw;
+  let code = segments[0] ?? "";
   values.forEach((value, i) => {
-    code += encodeValue(value, `BunPHP: interpolation #${i + 1}`) + (strings[i + 1] ?? "");
+    code += encodeValue(value, `BunPHP: interpolation #${i + 1}`) + (segments[i + 1] ?? "");
   });
   return code;
 }

@@ -22,10 +22,28 @@ const MIN_INT64 = -(2n ** 63n);
 export function encodeArgs(args: readonly unknown[], label = "call"): string {
   let length = args.length;
   while (length > 0 && args[length - 1] === undefined) length--;
-  return args
-    .slice(0, length)
-    .map((arg, i) => encodeValue(arg, `${label}: argument #${i + 1}`))
-    .join(", ");
+  // Indexed rather than `.map`, which skips holes: `f(, 1)` must report the hole, not emit `f(, 1)`.
+  return Array.from({ length }, (_, i) =>
+    encodeValue(args[i], `${label}: argument #${i + 1}`),
+  ).join(", ");
+}
+
+/** Where a non-finite number hides inside `value`, if anywhere; `phpVar`'s JSON path turns it to null. */
+function nonFinitePath(value: unknown, path: string): string | null {
+  if (typeof value === "number") return Number.isFinite(value) ? null : path;
+  if (Array.isArray(value)) {
+    return value.reduce<string | null>(
+      (found, item, i) => found ?? nonFinitePath(item, `${path}[${i}]`),
+      null,
+    );
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).reduce<string | null>(
+      (found, [key, item]) => found ?? nonFinitePath(item, `${path}.${key}`),
+      null,
+    );
+  }
+  return null;
 }
 
 /** Encode one JS value as a PHP expression; `context` names it in error messages. */
@@ -40,6 +58,13 @@ export function encodeValue(value: unknown, context: string): string {
   }
   if (typeof value === "number" && !Number.isFinite(value)) {
     return Number.isNaN(value) ? "NAN" : value > 0 ? "INF" : "-INF";
+  }
+  // Only a top-level one has a PHP literal to become; nested, JSON would silently make it null.
+  const nested = nonFinitePath(value, "");
+  if (nested !== null) {
+    throw new TypeError(
+      `${context} holds a non-finite number at ${nested}; NaN and Infinity survive only as a whole argument`,
+    );
   }
   try {
     return phpVar(value as never);
@@ -189,11 +214,14 @@ export class EnvelopeSplitter {
   }
 
   #closeEnvelope(json: string): void {
-    this.#inEnvelope = false;
-    // Not JSON means it was never an envelope, just output that happened to contain the marker.
-    if (!this.#tryEnvelope(json, SENTINEL + json + SENTINEL)) {
-      this.#emit(SENTINEL + json + SENTINEL);
+    if (this.#tryEnvelope(json, SENTINEL + json + SENTINEL)) {
+      this.#inEnvelope = false;
+      return;
     }
+    // Not JSON means it was never an envelope, just output that happened to contain the marker. Only
+    // the opening sentinel is put back: staying in-envelope re-uses the closing one as an opener, so
+    // a stray sentinel in the output cannot shift the pairing and hide the real envelope after it.
+    this.#emit(SENTINEL + json);
   }
 
   /** Adopt `json` as the envelope, turning any earlier one back into output. */

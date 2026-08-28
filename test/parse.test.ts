@@ -349,3 +349,38 @@ describe("errors", () => {
     }
   });
 });
+
+describe("docblocks", () => {
+  test("a variadic is typed the same however the docblock spells it", () => {
+    // PSR-5 describes one element, the array form describes the collected array; both mean string[].
+    const psr5 = fn(`/** @param string ...$args */ function f(...$args) {}`, "f");
+    const arrayForm = fn(`/** @param string[] $args */ function f(...$args) {}`, "f");
+    const declared = fn(`function f(string ...$args) {}`, "f");
+
+    expect(psr5.params[0]!.tsType).toBe("string");
+    expect(arrayForm.params[0]!.tsType).toBe("string");
+    expect(declared.params[0]!.tsType).toBe("string");
+  });
+
+  test("a non-variadic keeps the docblock type exactly", () => {
+    // Only a variadic gives up a level; `@param string[] $rows` on a plain parameter is an array.
+    expect(fn(`/** @param string[] $rows */ function f($rows) {}`, "f").params[0]!.tsType).toBe(
+      "string[]",
+    );
+  });
+
+  test("the summary stops at the first tag, whichever tag it is", () => {
+    const meta = fn(
+      `/**
+        * Real summary.
+        *
+        * @throws RuntimeException when the widget explodes
+        *   and this line continues @throws, not the summary
+        * @param int $n
+        */
+       function f(int $n): int {}`,
+      "f",
+    );
+    expect(meta.doc).toBe("Real summary.");
+  });
+});

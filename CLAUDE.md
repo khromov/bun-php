@@ -105,6 +105,11 @@ takes the boot promise and sets `#instance` to `null` _before_ awaiting it; the 
 boots a replacement and replays the journal. `#apply` awaits `php()` _before_ recording an op, because a
 boot replays the journal and recording first would run the new op twice on the very first call.
 
+**A journal op is recorded only once it has applied.** `#apply` boots first (a boot replays the journal, so
+recording first would run the op twice) and pushes only after `applyOp` resolves. Pushing first meant a
+`mount()` that rejected still replayed onto every later boot: the caller was told it failed while it broke
+every subsequent `cli()` with an opaque error.
+
 **`$reset()` and `$dispose()` are lazy.** Both wait for in-flight calls (`#running`), then `dispose()` the
 interpreter; the next call re-boots and the journal re-mounts the root from scratch. That is why
 php-wasm's `hotSwapPHPRuntime` is not used — a hot swap would copy the old MEMFS across, and `$reset` exists
@@ -124,7 +129,15 @@ classifying: a sentinel can straddle a chunk boundary (so a tail that could stil
 back), a sentinel pair whose contents are not JSON was never an envelope (so it is put back verbatim), and
 _last pair wins_ means output after an envelope is held until the stream ends, in case a later one supersedes
 it. `test/marshal.test.ts` feeds the splitter whole strings and chunk-by-chunk, so the two cannot drift.
+A failed pair puts back only its _opening_ sentinel and stays in-envelope, so the closing one becomes the
+next opener: otherwise one stray sentinel in the script's output shifts the pairing by one and the real
+envelope is emitted as text.
 Only buffers the _user's_ code opened and left open still arrive in the envelope's `out` field.
+
+**Values cross by JSON, so `NaN`/`Infinity` only survive as a whole argument.** `encodeValue` turns a
+top-level one into PHP's `NAN`/`INF`, but `phpVar` encodes anything else through JSON, where they become
+`null`; `nonFinitePath` finds a nested one and throws instead of losing it silently. `encodeArgs` builds its
+list by index rather than `.map`, which skips array holes and used to emit the invalid `f(, 1)`.
 
 **Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module and the Composer
 autoloader each time because php-wasm resets request-scoped state (declared functions and autoloaders
@@ -141,6 +154,12 @@ default, while `BunPHP.capture` resolves to the output and prints nothing. Both 
 created `"inherit"`: `capture` passes `$eval` an output sink, which overrides the instance's stdout mode for
 that call alone. A sink per call is what keeps a snippet that throws part-way through printing from leaving
 its output behind for the next snippet.
+
+**Inline snippets are read from `strings.raw`, not the cooked segments.** The snippet is PHP source, and
+cooked strings let JavaScript consume its escapes first: `preg_match('/\d+/')` silently became `/d+/`, a
+leading `\` on a class name disappeared, and an invalid escape made the segment `undefined`, which `?? ""`
+turned into an erased snippet returning `null`. Raw segments are never `undefined`, so both go away together.
+The cost is that a template's `\n` is now PHP's escape rather than JavaScript's; write real newlines.
 
 **Inline snippets interpolate as expressions, not text.** `src/inline.ts` runs every interpolated value
 through `encodeValue()` from `marshal.ts`, so a value can never be executed as code; `test/inline.test.ts`
@@ -185,7 +204,9 @@ when unset, so a module without runtime options generates byte-identically to be
 
 **PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
 `@php-wasm/node-X-Y` resolved with a dynamic `import()`. `buildImportError` classifies a failed import
-rather than assuming: only `ERR_MODULE_NOT_FOUND` is `PhpBuildNotInstalledError` with its `bun add` advice,
+rather than assuming: only an `ERR_MODULE_NOT_FOUND` whose `specifier` is the build package itself is
+`PhpBuildNotInstalledError` with its `bun add` advice — a transitive dependency failing inside an installed
+build would otherwise be answered with "install what you already have" —
 and anything else — a build that resolved but threw — is `PhpBuildLoadError`, so the message never sends
 someone to install what they already have. Only 8.5 is a real dependency; the rest are optional
 peer dependencies, because each build is tens of MB of wasm. `@php-wasm/node` is deliberately avoided — it
