@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PhpTimeoutError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
 import { PhpError } from "../src/errors";
-import { readReply, reviveError, serialiseError } from "../src/isolation";
+import { killedByDeadline, readReply, reviveError, serialiseError } from "../src/isolation";
 import { PhpBuildNotInstalledError } from "../src/php-runtime";
 
 const BOOT_MS = 30_000;
@@ -213,6 +213,21 @@ describe("errors crossing the boundary", () => {
 
   test("a non-Error rejection still crosses", () => {
     expect(reviveError(serialiseError("just a string")).message).toBe("Error: just a string");
+  });
+});
+
+describe("the deadline and a child that finished on its own", () => {
+  test("only a signalled child counts as a timeout", () => {
+    // The timer can fire as the child is already exiting: the kill lands on a corpse while a
+    // complete reply is sitting in stdout, and treating that as a timeout throws away a real result.
+    expect(killedByDeadline(true, "SIGKILL")).toBe(true);
+    expect(killedByDeadline(true, null)).toBe(false);
+  });
+
+  test("a child that outlived nothing is never a timeout", () => {
+    expect(killedByDeadline(false, null)).toBe(false);
+    // A child killed by something else while no deadline was set is not the deadline's doing.
+    expect(killedByDeadline(false, "SIGSEGV")).toBe(false);
   });
 });
 

@@ -129,6 +129,14 @@ export function readReply(stdout: string, stderr: string, exitCode: number): Php
   return reply.result;
 }
 
+/**
+ * Whether the deadline is what ended the child. A timer that fires as the child is already exiting
+ * kills a corpse, and the complete reply it left behind is a real result, not a casualty of the clock.
+ */
+export function killedByDeadline(timedOut: boolean, signalCode: string | null): boolean {
+  return timedOut && signalCode !== null;
+}
+
 /** Run one CLI invocation in a child that exits afterwards, so the deadline is a SIGKILL. */
 export async function runIsolatedCli(
   request: IsolationRequest,
@@ -155,7 +163,7 @@ export async function runIsolatedCli(
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    if (timedOut) {
+    if (killedByDeadline(timedOut, child.signalCode)) {
       throw new PhpTimeoutError(
         `PHP call exceeded ${timeoutMs}ms; the child process was killed`,
         timeoutMs,

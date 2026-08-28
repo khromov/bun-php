@@ -108,7 +108,12 @@ await BunPHP`<?php echo "Hello world";`; // prints "Hello world", resolves to nu
 await BunPHP`<?php return 40 + 2;`; // 42
 await BunPHP.capture`<?php echo "Hello world";`; // "Hello world"
 await BunPHP.capture`<?php return 40 + 2;`; // 42 — a return still wins
+await BunPHP.capture`<?php echo "out"; return null;`; // "out" — see below
 ```
+
+`capture` falls back to the output when the snippet returns `null`, and PHP cannot tell an explicit
+`return null;` from a snippet that returned nothing at all. Every other value wins, `false` and `""`
+included.
 
 Both tags are optional: a tag-less snippet is code, `<?= ... ?>` works, and markup around the tags is
 emitted just as it would be from a PHP file:
@@ -419,6 +424,13 @@ wasm abort takes only its own child.
   rejects it, so a file declaring one fails to import.
 - **Only what you mount exists** inside the virtual filesystem. Don't reach for `open_basedir` or
   `disable_functions` as a substitute; their behaviour under php-wasm varies by build.
+- **Short open tags are on**, because the bundled build ships PHP's built-in default and no `php.ini`.
+  So `<? ... ?>` runs as code — and `<?xml version="1.0"?>` is a parse error, exactly as it is in raw
+  PHP with that setting. Open with `<?php`.
+- **Constants are evaluated at build time**, so a shape whose value depends on the PHP version isn't
+  exported at all: an array key past 2^53, or an implicit key following a negative one (PHP 8.3
+  changed where it resumes). Those land in the `// Not exported:` trailer instead of exporting a
+  value that would be wrong on some supported build.
 
 ## Development
 

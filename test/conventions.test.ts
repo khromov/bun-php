@@ -31,6 +31,26 @@ function unawaitedMatchers(source: string): number[] {
   return offenders;
 }
 
+describe("suite structure", () => {
+  test("no file declares the same describe title twice", async () => {
+    // A careless replace-all once pasted a whole block in twice; the copies then drift apart in
+    // silence, and both keep passing.
+    const duplicates: string[] = [];
+
+    for await (const file of new Glob("{test,demos}/**/*.test.ts").scan(ROOT)) {
+      const source = await Bun.file(join(ROOT, file)).text();
+      const titles = [...source.matchAll(/^describe\((["'`])(.*?)\1/gm)].map((m) => m[2]!);
+      const seen = new Set<string>();
+      for (const title of titles) {
+        if (seen.has(title)) duplicates.push(`${file}: ${title}`);
+        seen.add(title);
+      }
+    }
+
+    expect(duplicates).toEqual([]);
+  });
+});
+
 describe("async matchers", () => {
   test("every rejects/resolves assertion is awaited", async () => {
     // An un-awaited one passes whatever the code does, so the test silently asserts nothing.

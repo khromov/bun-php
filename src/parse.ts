@@ -15,9 +15,11 @@ const NOT_LITERAL = Symbol("not-literal");
 
 /** What the generated module needs from a file: its top-level functions and literal constants. */
 export function parsePhp(source: string, filePath: string): PhpModuleMeta {
-  // The Engine constructor mutates its options object, so build a fresh one each time.
+  // The Engine constructor mutates its options object, so build a fresh one each time. Short tags
+  // are on because the php-wasm build has them on; off, a `<?` file lexes as markup and exports nothing.
   const engine = new Engine({
     parser: { extractDoc: true, suppressErrors: false, version: 805 },
+    lexer: { short_tags: true },
     ast: { withPositions: true },
   });
 
@@ -80,11 +82,11 @@ function collision(name: string): string {
 
 function isDefineCall(node: Node): boolean {
   const call = node.kind === "expressionstatement" ? node.expression : null;
-  return (
-    call?.kind === "call" &&
-    call.what?.kind === "name" &&
-    String(call.what.name).toLowerCase() === "define"
-  );
+  if (call?.kind !== "call" || call.what?.kind !== "name") return false;
+  // Namespaced code often writes `\define(...)` to skip the runtime fallback lookup, and that is the
+  // same function; only the leading separator is dropped, so `A\define` stays a different function.
+  const name = String(call.what.name).replace(/^\\/, "");
+  return name.toLowerCase() === "define";
 }
 
 /** Visit top-level declarations, descending through namespace/declare/block wrappers. */
@@ -280,6 +282,9 @@ function arrayValue(items: Node[]): PhpValue | typeof NOT_LITERAL {
     let key: string | number = maxIntKey === null ? 0 : maxIntKey + 1;
     // Past 2^53 the increment stops moving, so two entries would collide on one key.
     if (typeof key === "number" && !Number.isSafeInteger(key)) return NOT_LITERAL;
+    // PHP 8.3 changed where an implicit key resumes after a negative one (8.0-8.2 restart at 0), and
+    // constants are evaluated here regardless of which build `phpVersion` selects.
+    if (item.key == null && maxIntKey !== null && maxIntKey < 0) return NOT_LITERAL;
     if (item.key != null) {
       const raw = literalValue(item.key);
       if (raw === NOT_LITERAL) return NOT_LITERAL;

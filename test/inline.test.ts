@@ -33,6 +33,16 @@ describe("result", () => {
     expect(await BunPHP.capture`<?php echo "ignored"; return "returned";`).toBe("returned");
   });
 
+  test("capture falls back to output on null, which PHP cannot tell from no return", async () => {
+    // `return null;` and returning nothing leave the same envelope, so this is the documented rule
+    // rather than a distinction the runtime could make.
+    expect(await BunPHP.capture`<?php echo "out"; return null;`).toBe("out");
+    expect(await BunPHP.capture`<?php echo "out";`).toBe("out");
+    // Everything else still wins, falsy included.
+    expect(await BunPHP.capture`<?php echo "out"; return false;`).toBe(false);
+    expect(await BunPHP.capture`<?php echo "out"; return "";`).toBe("");
+  });
+
   test("falsy return values are preserved", async () => {
     expect(await BunPHP`<?php return 0;`).toBe(0);
     expect(await BunPHP`<?php return false;`).toBe(false);
@@ -145,6 +155,13 @@ describe("open and close tags", () => {
 
   test("interpolation works inside markup", async () => {
     expect(await BunPHP.capture`<b><?= ${"safe"} ?></b>`).toContain("<b>safe</b>");
+  });
+
+  test("a short open tag runs, as it does in the bundled build", async () => {
+    // php-parser defaults short tags off while the php-wasm build has them on; disagreeing made
+    // `scanMode` append a `<?php` re-entry while PHP was already in code mode.
+    expect(await BunPHP.capture`<p>x</p><? echo 1;`).toBe("<p>x</p>1");
+    expect(await BunPHP`<? return 6 * 7;`).toBe(42);
   });
 
   test("an uppercase open tag runs", async () => {

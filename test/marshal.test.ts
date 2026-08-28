@@ -76,6 +76,20 @@ describe("encodeValue", () => {
     }
   });
 
+  test("a throwing getter is reported the same way phpVar's failures are", () => {
+    // The non-finite scan reads properties too, so it must not escape with a raw error where the
+    // encoder right after it would have been wrapped.
+    const value = {
+      get boom(): number {
+        throw new Error("getter exploded");
+      },
+    };
+
+    expect(() => encodeValue(value, "f: argument #1")).toThrow(
+      "f: argument #1 could not be encoded: getter exploded",
+    );
+  });
+
   test("names the value in error messages", () => {
     expect(() => encodeValue(undefined, "BunPHP: interpolation #2")).toThrow(
       /BunPHP: interpolation #2 is undefined/,

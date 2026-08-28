@@ -61,16 +61,18 @@ export function encodeValue(value: unknown, context: string): string {
   if (typeof value === "number" && !Number.isFinite(value)) {
     return Number.isNaN(value) ? "NAN" : value > 0 ? "INF" : "-INF";
   }
-  // Only a top-level one has a PHP literal to become; nested, JSON would silently make it null.
-  const nested = nonFinitePath(value, "", new WeakSet());
-  if (nested !== null) {
-    throw new TypeError(
-      `${context} holds a non-finite number at ${nested}; NaN and Infinity survive only as a whole argument`,
-    );
-  }
   try {
+    // Only a top-level one has a PHP literal to become; nested, JSON would silently make it null.
+    // Inside the same `try` as `phpVar`, so a throwing getter reads the same either side of it.
+    const nested = nonFinitePath(value, "", new WeakSet());
+    if (nested !== null) {
+      throw new TypeError(
+        `${context} holds a non-finite number at ${nested}; NaN and Infinity survive only as a whole argument`,
+      );
+    }
     return phpVar(value as never);
   } catch (err) {
+    if (err instanceof TypeError && err.message.startsWith(context)) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     throw new TypeError(`${context} could not be encoded: ${reason}`);
   }

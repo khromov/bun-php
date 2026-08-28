@@ -114,7 +114,10 @@ every subsequent `cli()` with an opaque error.
 **In-process `timeoutMs` bounds waiting, wherever it is set.** `withDeadline` in `interpreter.ts` is the
 one implementation: `PhpInterpreter` uses it for `cli()` and sets `retired`, and `PhpInstance.run` uses it
 for module calls, where there is no flag to set and later calls simply queue behind the abandoned request.
-A module's `timeoutMs` used to be accepted, documented and silently ignored.
+A module's `timeoutMs` used to be accepted, documented and silently ignored. The deadline is armed _after_
+`php()` resolves, so a cold call does not spend its budget on a boot the caller cannot influence; the same
+reason `killedByDeadline` in `isolation.ts` requires a `signalCode`, because a timer firing as the child
+exits kills a corpse and would otherwise discard the complete reply it left in stdout.
 
 **A rejected boot is not cached.** `php()` clears `#instance` when `bootPhp` rejects, so a transient
 failure does not replay on every later call until `$reset()`. `dispose()` clears `retired` for the same
@@ -187,7 +190,10 @@ it. `tokenGetAll` has no eval mode (the `mode_eval` lexer option does not reach 
 `<?php ` prefix to start the lexer in code mode, and a `<` token immediately followed by `?` is what marks a
 snippet that meant to open with markup — no valid PHP puts those two adjacent. That makes `inline.ts` the
 second consumer of php-parser after `parse.ts`; do not hand-roll the scan back. `asClosureBody` is exported
-so `test/inline.test.ts` can unit-test the rules without booting wasm.
+so `test/inline.test.ts` can unit-test the rules without booting wasm. Both Engines pass
+`lexer: { short_tags: true }` (the option is `short_tags`, not `short_open_tag`) because the php-wasm build
+ships PHP's built-in `short_open_tag=On`: with the parser disagreeing, a `<?` file exported nothing and a
+`<?` snippet got a `<?php ` re-entry appended while PHP was already in code mode.
 
 **Aliasing has one source of truth.** `bindingNameFor` (exported from `codegen.ts`) decides the local binding
 for a PHP name, and `exportLines` turns that into either a direct export or an alias plus re-export;
@@ -199,8 +205,12 @@ API: the function stays a named export, but `dts.ts` leaves it off the `_default
 generators emit a "Named export only" trailer, because a second `call` key is a TS2717 and at runtime the
 API wins anyway — which is why `createPhpModule` lists `call` _after_ the function spread. Every other API
 member is `$`-prefixed and a PHP function name cannot start with `$`, so `call` is the whole list.
-An array key PHP would int-ify but JavaScript cannot hold exactly (past 2^53) makes the whole constant
-`NOT_LITERAL`: rounding it silently collides two entries or restarts the implicit key at zero.
+A constant whose value JavaScript cannot reproduce faithfully is `NOT_LITERAL` rather than a guess: an
+array key past 2^53 (rounding it collides two entries or restarts the implicit key at zero), and an
+implicit key following a negative one, which PHP 8.3 resumes at `-4` where 8.0-8.2 restart at `0` — the
+parser has no idea which build `phpVersion` will select. `isDefineCall` strips one leading `\` before
+comparing, because namespaced code writes `\define(...)` to skip the runtime fallback lookup; `A\define`
+is a genuinely different function and stays ignored.
 `RESERVED` in `codegen.ts` is _ECMAScript's_ invalid-binding list (reserved words + strict-mode additions +
 `arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
 transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,

@@ -135,6 +135,42 @@ describe("array keys past 2^53", () => {
   test("a non-numeric key is untouched", () => {
     expect(value(`const A = ["01" => "a", "x" => "b"];`)).toEqual({ "01": "a", x: "b" });
   });
+
+  test("an implicit key after a negative one is version-dependent, so not a literal", () => {
+    // PHP 8.3 resumes at -4; 8.0-8.2 restart at 0, and constants are evaluated without knowing which.
+    expect(value(`const A = [-5 => "a", "b"];`)).toBeUndefined();
+    expect(parse(`const B = [-5 => "a", "b"];`).skipped).toHaveLength(1);
+    // An explicit key, or a negative one on its own, says exactly what it means.
+    expect(value(`const C = [-5 => "a"];`)).toEqual({ "-5": "a" });
+    expect(value(`const D = [-5 => "a", -4 => "b"];`)).toEqual({ "-5": "a", "-4": "b" });
+  });
+});
+
+describe("fully-qualified define()", () => {
+  test("a leading separator names the same function", () => {
+    // Namespaced code writes `\define(...)` to skip the runtime fallback lookup.
+    expect(parse(`\\define('FQ', 1);`).constants).toEqual([{ name: "FQ", value: 1 }]);
+    expect(parse(`\\DEFINE('UPPER', 2);`).constants).toEqual([{ name: "UPPER", value: 2 }]);
+    expect(parse(`define('PLAIN', 3);`).constants).toEqual([{ name: "PLAIN", value: 3 }]);
+  });
+
+  test("a qualified name is a different function and is left alone", () => {
+    expect(parse(`A\\define('NS', 1);`).constants).toEqual([]);
+    expect(parse(`A\\define('NS', 1);`).skipped).toEqual([]);
+  });
+});
+
+describe("short open tags", () => {
+  test("a file opening with `<?` is still parsed", () => {
+    // The php-wasm build has short_open_tag on, so the parser must agree or the module exports nothing.
+    const meta = parsePhp(`<? function shortTag(): int { return 1; }`, "/virtual/short.php");
+    expect(meta.functions.map((f) => f.exportName)).toEqual(["shortTag"]);
+  });
+
+  test("`<?=` and `<?php` are unaffected", () => {
+    expect(parsePhp(`<?php function a(): int {}`, "/v/a.php").functions).toHaveLength(1);
+    expect(parsePhp(`<?= 1 ?><?php function b(): int {}`, "/v/b.php").functions).toHaveLength(1);
+  });
 });
 
 describe("docblocks", () => {
@@ -371,28 +407,7 @@ describe("errors", () => {
   });
 });
 
-describe("array keys past 2^53", () => {
-  const value = (php: string) => parse(php).constants[0]?.value;
-
-  test("an integer key JavaScript cannot hold exactly is not a literal", () => {
-    // PHP int-ifies the string and counts on from it; a rounded key silently reshapes the constant.
-    expect(value(`const A = ["9007199254740993" => "a", "b"];`)).toBeUndefined();
-    expect(value(`const B = [9007199254740993 => "a", "b"];`)).toBeUndefined();
-    expect(parse(`const C = ["9007199254740993" => "a"];`).skipped).toHaveLength(1);
-  });
-
-  test("keys it can hold are still int-ified the way PHP does", () => {
-    expect(value(`const A = ["1" => "a", "b"];`)).toEqual({ "1": "a", "2": "b" });
-    expect(value(`const B = ["0" => "a", "b"];`)).toEqual(["a", "b"]);
-    expect(value(`const C = ["9007199254740991" => "a"];`)).toEqual({ "9007199254740991": "a" });
-  });
-
-  test("a non-numeric key is untouched", () => {
-    expect(value(`const A = ["01" => "a", "x" => "b"];`)).toEqual({ "01": "a", x: "b" });
-  });
-});
-
-describe("docblocks", () => {
+describe("docblock types for variadics", () => {
   test("a variadic is typed the same however the docblock spells it", () => {
     // PSR-5 describes one element, the array form describes the collected array; both mean string[].
     const psr5 = fn(`/** @param string ...$args */ function f(...$args) {}`, "f");

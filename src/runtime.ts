@@ -78,12 +78,20 @@ class PhpInstance {
     this.#running.add(task);
     const done = () => this.#running.delete(task);
     task.then(done, done);
+    return task;
+  }
+
+  async #run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
+    // Booted outside the deadline: a cold first call would otherwise spend its whole budget on wasm
+    // startup, which the caller cannot influence, and then succeed on the retry.
+    const php = await this.php();
+    const call = this.#exchange(php, expression, label, sink);
 
     const timeoutMs = this.runtime.timeoutMs ?? 0;
-    if (timeoutMs <= 0) return task;
+    if (timeoutMs <= 0) return call;
     // Waiting only, as in-process always is: the request runs on, and the next call queues behind it.
     return withDeadline(
-      task,
+      call,
       timeoutMs,
       () =>
         new PhpTimeoutError(
@@ -93,8 +101,12 @@ class PhpInstance {
     );
   }
 
-  async #run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
-    const php = await this.php();
+  async #exchange(
+    php: PHP,
+    expression: string,
+    label: string,
+    sink?: (text: string) => void,
+  ): Promise<unknown> {
     const response = await php.runStream({
       code: buildCallScript(this.id, expression, this.autoload),
     });
@@ -163,6 +175,14 @@ class PhpInstance {
   }
 }
 
+/** Key-sorted JSON, so options that differ only in the order they were written share one interpreter. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) => {
+    if (inner === null || typeof inner !== "object" || Array.isArray(inner)) return inner;
+    return Object.fromEntries(Object.entries(inner).sort(([a], [b]) => (a < b ? -1 : 1)));
+  });
+}
+
 /** The object a generated `.php` module exports. The interpreter boots on the first call, not at import. */
 export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
   const { id, source, functions, meta } = options;
@@ -179,7 +199,7 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
 
   // Everything that decides which interpreter to boot; `loader` and `spawn` are compared by identity.
   const { loader, spawn, ...serialisable } = runtime;
-  const key = JSON.stringify({ source, stdout, root, autoload, runtime: serialisable });
+  const key = canonical({ source, stdout, root, autoload, runtime: serialisable });
 
   const cached = cache().get(id);
   const sameConfig =

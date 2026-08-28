@@ -40,6 +40,21 @@ describe("instance cache", () => {
     expect(cache().get(id)).not.toBe(first);
     cache().delete(id);
   });
+
+  test("the key does not depend on the order options were written", () => {
+    // A plain JSON.stringify made the same configuration two different keys, disposing and
+    // re-booting an interpreter over nothing.
+    const id = "/virtual/cache-order.php";
+    const build = (runtime: Record<string, unknown>) =>
+      createPhpModule({ id, source: "<?php\n", functions: {}, meta, stdout: "ignore", runtime });
+
+    build({ phpVersion: "8.5", timeoutMs: 1000, ini: { memory_limit: "64M", precision: 14 } });
+    const first = cache().get(id);
+    build({ ini: { precision: 14, memory_limit: "64M" }, timeoutMs: 1000, phpVersion: "8.5" });
+
+    expect(cache().get(id)).toBe(first);
+    cache().delete(id);
+  });
 });
 
 describe("default export", () => {
@@ -107,6 +122,29 @@ describe("streaming output", () => {
 });
 
 describe("runtime.timeoutMs", () => {
+  test("does not count the wasm boot against the first call", async () => {
+    // Booting costs 100-800ms cold, which no caller can influence; charging it to the deadline made
+    // the first call reject and the retry succeed. The loader is slowed so the boot alone would
+    // blow a 200ms budget however warm the wasm cache happens to be.
+    const module = createPhpModule({
+      id: "/virtual/timeout-cold.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+      runtime: {
+        timeoutMs: 200,
+        loader: async () => {
+          await Bun.sleep(600);
+          return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
+        },
+      },
+    });
+
+    expect(await module.$eval("return 1;")).toBe(1);
+    await module.$dispose();
+  }, 30_000);
+
   test("bounds the wait on a module call", async () => {
     // The plugin accepts and documents it, but nothing outside cli() used to consume it.
     const module = createPhpModule({

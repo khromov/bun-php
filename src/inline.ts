@@ -49,7 +49,12 @@ function tokenName(token: string | string[]): string {
  */
 function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
   // The Engine constructor mutates its options object, so build a fresh one each time.
-  const engine = new Engine({ parser: { suppressErrors: true, version: 805 } });
+  // Short tags on, because the interpreter that runs the snippet has them on: read as markup instead,
+  // a `<?` snippet gets a `<?php ` re-entry appended while PHP is already in code mode.
+  const engine = new Engine({
+    parser: { suppressErrors: true, version: 805 },
+    lexer: { short_tags: true },
+  });
   const tokens = engine.tokenGetAll(`<?php ${code}`) as (string | string[])[];
 
   let inCode = true;
@@ -109,7 +114,7 @@ async function evaluate(
 
 export interface BunPHPTag {
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<any>;
-  /** Resolve to the output instead of printing it; a top-level `return` still wins. */
+  /** Resolve to the output instead of printing it; any non-null `return` wins, `false` and `""` too. */
   capture(strings: TemplateStringsArray, ...values: unknown[]): Promise<any>;
   /** Shut the inline interpreter down. */
   dispose(): Promise<void>;
