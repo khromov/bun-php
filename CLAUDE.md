@@ -146,7 +146,14 @@ its output behind for the next snippet.
 through `encodeValue()` from `marshal.ts`, so a value can never be executed as code; `test/inline.test.ts`
 asserts that with real injection payloads. `asClosureBody` strips a leading open tag (the snippet is
 evaluated inside a closure) and re-enters PHP mode when a snippet ends in markup, or the wrapper's closing
-brace becomes literal text.
+brace becomes literal text. Which tags are real is decided by `scanMode`, which runs php-parser's lexer
+(`tokenGetAll`), not `includes`/`lastIndexOf`: a `<?` or `?>` inside a string literal, heredoc/nowdoc or
+block comment is not a tag, while one inside a `//`/`#` line comment _is_ a real close, exactly as PHP reads
+it. `tokenGetAll` has no eval mode (the `mode_eval` lexer option does not reach it), so the snippet gets a
+`<?php ` prefix to start the lexer in code mode, and a `<` token immediately followed by `?` is what marks a
+snippet that meant to open with markup — no valid PHP puts those two adjacent. That makes `inline.ts` the
+second consumer of php-parser after `parse.ts`; do not hand-roll the scan back. `asClosureBody` is exported
+so `test/inline.test.ts` can unit-test the rules without booting wasm.
 
 **Aliasing has one source of truth.** `bindingNameFor` (exported from `codegen.ts`) decides the local binding
 for a PHP name, and `exportLines` turns that into either a direct export or an alias plus re-export;
