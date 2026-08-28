@@ -6,7 +6,7 @@ import type { JournalOp, PhpLoaderModule, PhpRuntimeOptions, PhpVersion } from "
 export const PHP_VERSION: PhpVersion = "8.5";
 
 // Only 8.5 is a real dependency: each build is tens of MB of wasm, so the rest are optional peers.
-const BUILD_PACKAGES: Record<PhpVersion, string> = {
+export const BUILD_PACKAGES: Record<PhpVersion, string> = {
   "8.0": "@php-wasm/node-8-0",
   "8.1": "@php-wasm/node-8-1",
   "8.2": "@php-wasm/node-8-2",
