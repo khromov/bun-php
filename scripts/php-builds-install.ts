@@ -26,6 +26,7 @@ if (unknown.length > 0) {
 const packages = requested.map((version) => BUILD_PACKAGES[version]);
 const MANIFEST = ["package.json", "bun.lock"];
 const saved = await Promise.all(MANIFEST.map((file) => Bun.file(file).text()));
+let failure = 0;
 
 try {
   const manifest = JSON.parse(saved[0]!) as {
@@ -41,7 +42,11 @@ try {
   const add = Bun.spawnSync(["bun", "add", ...packages], {
     stdio: ["inherit", "inherit", "inherit"],
   });
-  if (add.exitCode !== 0) process.exit(add.exitCode ?? 1);
+  // Recorded, not exited on: `process.exit` unwinds nothing, so exiting here would skip the restore
+  // below and leave the manifests stripped — the one state this script promises never to leave.
+  failure = add.exitCode ?? 1;
 } finally {
   await Promise.all(MANIFEST.map((file, i) => Bun.write(file, saved[i]!)));
 }
+
+if (failure !== 0) process.exit(failure);

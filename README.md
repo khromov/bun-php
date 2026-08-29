@@ -418,8 +418,10 @@ wasm abort takes only its own child.
 - **By-reference parameters (`&$x`) don't write back.** Arguments pass by value; the generated types carry a
   JSDoc warning.
 - **Only the project directory is mounted.** A `require` pointing outside the detected root won't resolve.
-  Set `mount: false` to opt out, leaving only the imported file's own source — the detected
-  `vendor/autoload.php` goes with it, since nothing outside the mount is reachable.
+  Set `mount: false` to opt out, leaving only the imported file's own source. The autoloader goes with
+  it — a configured `autoload` path as well as a detected one — because nothing outside the mount is
+  reachable, and requiring a file that isn't there fails every call. Use `createPhpModule` from
+  `bun-php/runtime` if you need a root-less module plus an autoloader you mount yourself.
 - **No networking and no Xdebug.** Available extensions are whatever the php-wasm build ships: `mbstring`,
   `openssl`, `hash`, `bcmath`, `dom`, `tokenizer`, `gd`, `zip`, `curl`, `sqlite3` and friends. **`intl` is
   absent**, so packages requiring `ext-intl` won't load.

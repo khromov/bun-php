@@ -179,10 +179,13 @@ describe("mount: false", () => {
     expect(unmounted.contents).toContain("autoload: null,");
   });
 
-  test("an explicit autoload path still wins", async () => {
+  test("an explicit autoload path goes too, rather than being emitted and ignored", async () => {
+    // `PhpInstance` drops the autoloader whenever it does not mount, so emitting a configured one
+    // here produced dead configuration: the module carried a path that could never be required.
     const { file } = await composerProject();
     const explicit = await runOnLoad(phpPlugin({ mount: false, autoload: "/opt/boot.php" }), file);
-    expect(explicit.contents).toContain(`autoload: "/opt/boot.php",`);
+    expect(explicit.contents).toContain("autoload: null,");
+    expect(explicit.contents).not.toContain("/opt/boot.php");
   });
 
   test("the generated module still calls into PHP", async () => {

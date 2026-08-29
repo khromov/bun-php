@@ -79,9 +79,10 @@ export interface PhpPluginOptions {
   /** Which files to handle. Default `/\.php$/`. */
   filter?: RegExp;
   /** Mount the project directory so sibling `require`s, `__DIR__` and Composer resolve. Default `true`.
-   * `false` also drops the detected autoloader, which could not be reached without the mount. */
+   * `false` drops the autoloader with it — configured or detected — as neither could be reached. */
   mount?: boolean;
-  /** File to require before the module. Defaults to a detected `vendor/autoload.php`; `false` disables. */
+  /** File to require before the module; ignored under `mount: false`. Defaults to a detected
+   * `vendor/autoload.php`; `false` disables detection. */
   autoload?: string | false;
   /** Interpreter options for every module this plugin loads. Must survive JSON; see the type. */
   runtime?: PhpModuleRuntimeOptions;

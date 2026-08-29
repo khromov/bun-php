@@ -136,6 +136,17 @@ describe("array keys past 2^53", () => {
     expect(value(`const A = ["01" => "a", "x" => "b"];`)).toEqual({ "01": "a", x: "b" });
   });
 
+  test("only a derived key can be underivable", () => {
+    // The implicit candidate was computed for every entry, so an explicit key after the highest
+    // safe integer tripped the 2^53 guard even though nothing needed deriving.
+    expect(value(`const A = [9007199254740991 => "a", "x" => "b"];`)).toEqual({
+      "9007199254740991": "a",
+      x: "b",
+    });
+    // An entry that really does need the next key is still refused.
+    expect(value(`const B = [9007199254740991 => "a", "b"];`)).toBeUndefined();
+  });
+
   test("an implicit key after a negative one is version-dependent, so not a literal", () => {
     // PHP 8.3 resumes at -4; 8.0-8.2 restart at 0, and constants are evaluated without knowing which.
     expect(value(`const A = [-5 => "a", "b"];`)).toBeUndefined();
@@ -244,6 +255,30 @@ describe("docblocks", () => {
 
   test("a parenthesised union with an array suffix survives", () => {
     expect(fn(`/** @param (int|string)[] $x */ function f(array $x) {}`).params[0]!.tsType).toBe(
+      "(number | string)[]",
+    );
+  });
+});
+
+describe("docblock unions", () => {
+  test("an alias that expands to several members is deduped by member", () => {
+    // `scalar` is three types; deduping whole parts left `string | number | boolean | string`.
+    expect(fn(`/** @param scalar|string $a */ function f($a) {}`).params[0]!.tsType).toBe(
+      "string | number | boolean",
+    );
+    expect(fn(`/** @param int|scalar $a */ function f($a) {}`).params[0]!.tsType).toBe(
+      "number | string | boolean",
+    );
+  });
+
+  test("a union of distinct types is untouched", () => {
+    expect(fn(`/** @param int|string $a */ function f($a) {}`).params[0]!.tsType).toBe(
+      "number | string",
+    );
+  });
+
+  test("a suffixed or parenthesised member is one type, not an alternation", () => {
+    expect(fn(`/** @param (int|string)[] $a */ function f($a) {}`).params[0]!.tsType).toBe(
       "(number | string)[]",
     );
   });
@@ -425,6 +460,21 @@ describe("docblock types for variadics", () => {
     expect(fn(`/** @param string[] $rows */ function f($rows) {}`, "f").params[0]!.tsType).toBe(
       "string[]",
     );
+  });
+
+  test("a tag with no body is still a tag", () => {
+    // `@internal` matched nothing, so it leaked into the summary and failed to close it.
+    const meta = fn(
+      `/**
+        * Real summary.
+        *
+        * @internal
+        * this line belongs to @internal
+        */
+       function f(): int {}`,
+      "f",
+    );
+    expect(meta.doc).toBe("Real summary.");
   });
 
   test("the summary stops at the first tag, whichever tag it is", () => {

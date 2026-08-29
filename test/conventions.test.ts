@@ -4,6 +4,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
@@ -77,6 +79,45 @@ describe("async matchers", () => {
     expect(unawaitedMatchers(bad)).toEqual([2]);
     expect(unawaitedMatchers(good)).toEqual([]);
   });
+});
+
+describe("php-builds:install", () => {
+  test("puts the manifests back when the install fails", async () => {
+    // The script strips the optional-peer declarations so `bun add` will act on them, and promises
+    // to restore them. `process.exit` inside the try unwound nothing, so the finally that restores
+    // never ran and a failed install left the manifest stripped.
+    const dir = await mkdtemp(join(tmpdir(), "bun-php-install-"));
+    try {
+      const manifest = `${JSON.stringify(
+        {
+          name: "probe",
+          peerDependencies: { "@php-wasm/node-8-0": "^3.1.51" },
+          peerDependenciesMeta: { "@php-wasm/node-8-0": { optional: true } },
+        },
+        null,
+        2,
+      )}\n`;
+      await Bun.write(join(dir, "package.json"), manifest);
+      await Bun.write(join(dir, "bun.lock"), "{}\n");
+
+      // A registry nothing is listening on, so `bun add` fails at once and offline.
+      const proc = Bun.spawnSync(
+        [process.execPath, join(ROOT, "scripts/php-builds-install.ts"), "8.0"],
+        {
+          cwd: dir,
+          env: { ...process.env, BUN_CONFIG_REGISTRY: "http://127.0.0.1:1" },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+
+      expect(proc.exitCode).not.toBe(0);
+      expect(await Bun.file(join(dir, "package.json")).text()).toBe(manifest);
+      expect(await Bun.file(join(dir, "bun.lock")).text()).toBe("{}\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe("ignore files", () => {

@@ -1,7 +1,7 @@
 import type { PHP } from "@php-wasm/universal";
 import { PhpTimeoutError } from "./errors";
 import { runIsolatedCli, type IsolationRequest } from "./isolation";
-import { applyOp, bootPhp, optionOps, warnIfPinned, writeFileOp } from "./php-runtime";
+import { applyOp, bootPhp, optionOps, withoutPinned, writeFileOp } from "./php-runtime";
 import type { JournalOp, PhpCliOptions, PhpCliResult, PhpRuntimeOptions } from "./types";
 
 /**
@@ -62,9 +62,11 @@ export class PhpInterpreter {
     return this.#apply({ kind: "mount", host, at });
   }
 
-  ini(entries: Record<string, string | number>): Promise<void> {
-    warnIfPinned(entries);
-    return this.#apply({ kind: "ini", entries });
+  async ini(entries: Record<string, string | number>): Promise<void> {
+    // Stripped, not just warned about: this op lands on a live instance, which the boot-time pin
+    // never gets to correct.
+    const allowed = withoutPinned(entries);
+    if (Object.keys(allowed).length > 0) await this.#apply({ kind: "ini", entries: allowed });
   }
 
   writeFile(path: string, data: string | Uint8Array): Promise<void> {
@@ -94,8 +96,13 @@ export class PhpInterpreter {
     if (this.options.isolation === "process") {
       return runIsolatedCli(this.#isolationRequest(argv, options), timeoutMs);
     }
+    // Taken before `#cli` consumes it, so the clock can start once the boot is done rather than
+    // charging the caller for wasm startup they cannot influence — as `PhpInstance.run` already does.
+    const booted = this.php();
     const run = this.#cli(argv, options);
-    return timeoutMs > 0 ? this.#deadline(run, timeoutMs) : run;
+    if (timeoutMs <= 0) return run;
+    await booted.catch(() => {});
+    return this.#deadline(run, timeoutMs);
   }
 
   #isolationRequest(argv: string[], options: PhpCliOptions): IsolationRequest {

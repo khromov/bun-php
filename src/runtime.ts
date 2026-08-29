@@ -74,31 +74,33 @@ class PhpInstance {
   }
 
   run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
-    const task = this.#run(expression, label, sink);
-    this.#running.add(task);
-    const done = () => this.#running.delete(task);
-    task.then(done, done);
-    return task;
+    const work = this.#run(expression, label, sink);
+    // `#running` tracks the request, not the caller's view of it: a deadline rejects the caller while
+    // the PHP runs on, and a drain that forgot it would exit the runtime out from under it.
+    const tracked = work.catch(() => {});
+    this.#running.add(tracked);
+    void tracked.then(() => this.#running.delete(tracked));
+
+    const timeoutMs = this.runtime.timeoutMs ?? 0;
+    if (timeoutMs <= 0) return work;
+    // Armed once the boot is done: a cold first call would otherwise spend its whole budget on wasm
+    // startup, which the caller cannot influence, and then succeed on the retry.
+    return this.php().then(() =>
+      // Waiting only, as in-process always is: the request runs on, and later calls queue behind it.
+      withDeadline(
+        work,
+        timeoutMs,
+        () =>
+          new PhpTimeoutError(
+            `${label}: PHP call exceeded ${timeoutMs}ms; the request is still running and later calls queue behind it`,
+            timeoutMs,
+          ),
+      ),
+    );
   }
 
   async #run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
-    // Booted outside the deadline: a cold first call would otherwise spend its whole budget on wasm
-    // startup, which the caller cannot influence, and then succeed on the retry.
-    const php = await this.php();
-    const call = this.#exchange(php, expression, label, sink);
-
-    const timeoutMs = this.runtime.timeoutMs ?? 0;
-    if (timeoutMs <= 0) return call;
-    // Waiting only, as in-process always is: the request runs on, and the next call queues behind it.
-    return withDeadline(
-      call,
-      timeoutMs,
-      () =>
-        new PhpTimeoutError(
-          `${label}: PHP call exceeded ${timeoutMs}ms; the request is still running and later calls queue behind it`,
-          timeoutMs,
-        ),
-    );
+    return this.#exchange(await this.php(), expression, label, sink);
   }
 
   async #exchange(

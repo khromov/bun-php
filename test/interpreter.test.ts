@@ -94,6 +94,30 @@ describe("createInterpreter", () => {
   );
 
   test(
+    "a pinned php.ini entry cannot be set on a live instance either",
+    async () => {
+      // Boot re-asserts the pin after the journal, but ini() lands on an instance already running,
+      // where nothing corrects it afterwards. Warning about it was not the same as ignoring it.
+      const php = createInterpreter();
+      try {
+        await php.php();
+        await php.ini({ short_open_tag: "1", memory_limit: "256M" });
+
+        const result = await php.cli([
+          "php",
+          "-r",
+          'echo ini_get("short_open_tag") === "1" ? "On" : "Off", "|", ini_get("memory_limit");',
+        ]);
+        // The pinned entry is dropped; everything alongside it still applies.
+        expect(result.stdout).toBe("Off|256M");
+      } finally {
+        await php.dispose();
+      }
+    },
+    BOOT_MS,
+  );
+
+  test(
     'spawn: "refuse" answers process functions instead of hanging',
     async () => {
       const php = createInterpreter({ spawn: "refuse" });
@@ -255,6 +279,29 @@ describe("phpVersion", () => {
         await expect(php.php()).rejects.toThrow("transient boot failure");
         expect((await php.cli(["php", "-r", "echo 'recovered';"])).stdout).toBe("recovered");
         expect(attempts).toBe(2);
+      } finally {
+        await php.dispose();
+      }
+    },
+    BOOT_MS,
+  );
+
+  test(
+    "the wasm boot is not charged to the deadline",
+    async () => {
+      // A cold cli() used to time out on startup alone and needlessly retire the interpreter, while
+      // the module path deliberately excluded it. The loader is slowed so the boot alone outlasts
+      // the budget, leaving the call itself room on a slow runner.
+      const php = createInterpreter({
+        timeoutMs: 400,
+        loader: async () => {
+          await Bun.sleep(1000);
+          return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
+        },
+      });
+      try {
+        expect((await php.cli(["php", "-r", "echo 'quick';"])).stdout).toBe("quick");
+        expect(php.retired).toBe(false);
       } finally {
         await php.dispose();
       }

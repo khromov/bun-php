@@ -92,15 +92,18 @@ churns mtime and retriggers the watcher in a loop.
 **An autoloader is only ever required when the root is mounted.** `plugin.ts` passes `autoload: false` to
 `resolveProject` when `mount: false`, and `PhpInstance` drops the autoload path whenever it takes the
 mkdir+writeFile fallback instead of mounting — a `require_once` of a host path that is not in the virtual
-filesystem is an `E_COMPILE_ERROR` on _every_ call, not just the first. An explicitly configured
-`autoload: "<path>"` still survives `mount: false`; only detection is switched off.
+filesystem is an `E_COMPILE_ERROR` on _every_ call, not just the first. That includes an explicitly
+configured `autoload: "<path>"`: emitting it under `mount: false` produced dead configuration, since
+`PhpInstance` drops it again anyway. Reach for `createPhpModule` directly to pair a root-less module
+with an autoloader you mount yourself.
 
 **Short tags are pinned off, which is why nothing has to keep the parser and the runtime in step.**
 `PINNED_INI` in `php-runtime.ts` is applied by `bootPhp` _after_ the journal, so no op can outrank it, and
 php-parser's own default already matches — no `lexer` options, no invariant to remember. PHP's built-in
 default is on only because no `php.ini` ships with the wasm builds, and that disagreement made a `<?` file
-export nothing while the runtime happily ran it. `warnIfPinned` logs rather than throws when someone sets
-it, because a silently-ignored option is worse than a noisy one. `<?=` is unaffected: it has been
+export nothing while the runtime happily ran it. `withoutPinned` logs and then _strips_ the entry, because
+`ini()` applies to an instance that is already running, where the boot-time pin never gets to correct
+it — warning about an override that still took effect was the worst of both. `<?=` is unaffected: it has been
 unconditional since PHP 5.4.
 
 **One journal configures every instance.** A `JournalOp` (`php-runtime.ts`) is plain data: mount, mkdir,
@@ -125,10 +128,13 @@ every subsequent `cli()` with an opaque error.
 **In-process `timeoutMs` bounds waiting, wherever it is set.** `withDeadline` in `interpreter.ts` is the
 one implementation: `PhpInterpreter` uses it for `cli()` and sets `retired`, and `PhpInstance.run` uses it
 for module calls, where there is no flag to set and later calls simply queue behind the abandoned request.
-A module's `timeoutMs` used to be accepted, documented and silently ignored. The deadline is armed _after_
-`php()` resolves, so a cold call does not spend its budget on a boot the caller cannot influence; the same
-reason `killedByDeadline` in `isolation.ts` requires a `signalCode`, because a timer firing as the child
-exits kills a corpse and would otherwise discard the complete reply it left in stdout.
+A module's `timeoutMs` used to be accepted, documented and silently ignored. Both arm the deadline _after_
+`php()` resolves, so a cold call does not spend its budget on a boot the caller cannot influence — only
+`isolation: "process"` counts startup, because a spawned child gives no point to start the clock later.
+That is the same reason `killedByDeadline` in `isolation.ts` requires a `signalCode`: a timer firing as the
+child exits kills a corpse and would otherwise discard the complete reply it left in stdout. `PhpInstance`
+keeps the request in `#running` after the deadline rejects, so a later `$reset()` still drains the PHP that
+is genuinely still executing.
 
 **A rejected boot is not cached.** `php()` clears `#instance` when `bootPhp` rejects, so a transient
 failure does not replay on every later call until `$reset()`. `dispose()` clears `retired` for the same

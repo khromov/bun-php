@@ -182,7 +182,8 @@ function readDocblock(node: Node): Docblock | null {
   let tagged = false;
 
   for (const line of lines) {
-    const tag = /^@(\w+)\s+(.*)$/.exec(line);
+    // The body is optional: `@internal` on its own is still a tag, and still ends the summary.
+    const tag = /^@(\w+)(?:\s+(.*))?$/.exec(line);
     if (!tag) {
       // Any tag ends the summary, even one nobody reads: what follows is that tag's continuation.
       if (!tagged) summary.push(line);
@@ -277,18 +278,22 @@ function arrayValue(items: Node[]): PhpValue | typeof NOT_LITERAL {
     const value = literalValue(item.value);
     if (value === NOT_LITERAL) return NOT_LITERAL;
 
-    let key: string | number = maxIntKey === null ? 0 : maxIntKey + 1;
-    // Past 2^53 the increment stops moving, so two entries would collide on one key.
-    if (typeof key === "number" && !Number.isSafeInteger(key)) return NOT_LITERAL;
-    // PHP 8.3 changed where an implicit key resumes after a negative one (8.0-8.2 restart at 0), and
-    // constants are evaluated here regardless of which build `phpVersion` selects.
-    if (item.key == null && maxIntKey !== null && maxIntKey < 0) return NOT_LITERAL;
+    let key: string | number;
     if (item.key != null) {
       const raw = literalValue(item.key);
       if (raw === NOT_LITERAL) return NOT_LITERAL;
       const normalised = phpArrayKey(raw);
       if (normalised === NOT_LITERAL) return NOT_LITERAL;
       key = normalised;
+    } else {
+      // Only an implicit key is derived, so only it can be underivable: an entry that says its own
+      // key is exact whatever the highest so far happens to be.
+      key = maxIntKey === null ? 0 : maxIntKey + 1;
+      // Past 2^53 the increment stops moving, so two entries would collide on one key.
+      if (!Number.isSafeInteger(key)) return NOT_LITERAL;
+      // PHP 8.3 changed where an implicit key resumes after a negative one (8.0-8.2 restart at 0),
+      // and constants are evaluated here regardless of which build `phpVersion` selects.
+      if (maxIntKey !== null && maxIntKey < 0) return NOT_LITERAL;
     }
     if (typeof key === "number") maxIntKey = maxIntKey === null ? key : Math.max(maxIntKey, key);
     entries.set(key, value);

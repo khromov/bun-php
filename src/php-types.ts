@@ -32,9 +32,16 @@ const TS_TYPES: Record<string, string> = {
   self: "Record<string, unknown>",
 };
 
-/** Dedupe and join as a union; `any` swallows every other member. */
+/**
+ * Dedupe and join as a union; `any` swallows every other member. Parts are split on `|` first,
+ * because one PHP alias can expand to several members — `scalar|string` is three, not four.
+ */
 function union(parts: string[]): string {
-  const unique = [...new Set(parts)];
+  const atoms = parts.flatMap((part) =>
+    // Only a bare alternation splits: a parenthesised or suffixed part is one type, not several.
+    /^[^()[\]]+$/.test(part) ? part.split("|").map((atom) => atom.trim()) : [part],
+  );
+  const unique = [...new Set(atoms.filter(Boolean))];
   if (unique.length === 0 || unique.includes("any")) return "any";
   return unique.join(" | ");
 }

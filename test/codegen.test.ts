@@ -168,6 +168,19 @@ describe("generated .d.ts", () => {
     expect(dts).toContain("type PhpArray =");
   });
 
+  test("a skipped note containing a line terminator stays inside its comment", () => {
+    // `define()` takes any name; a newline in one ended the `//` comment and left the rest of the
+    // note as bare tokens, so the module no longer parsed.
+    const { js, dts } = build(`define("a\nb", 'x' . 'y');`);
+
+    for (const generated of [js, dts]) {
+      const trailer = generated.slice(generated.indexOf("// Not exported:"));
+      expect(trailer.split("\n").filter(Boolean)).toHaveLength(2);
+      expect(trailer).toContain("define('a b')");
+    }
+    expect(() => new Bun.Transpiler({ loader: "js" }).transformSync(js)).not.toThrow();
+  });
+
   test("a PHP function named call stays a named export only", () => {
     // The API's own `call(name, args)` holds that key; a second one is TS2717, and at runtime the
     // API wins anyway, so the default export must not claim to carry the PHP function.

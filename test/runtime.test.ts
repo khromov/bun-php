@@ -232,6 +232,31 @@ describe("$reset", () => {
     await module.$dispose();
   }, 30_000);
 
+  test("waits for a call the deadline already rejected", async () => {
+    // The timeout rejects the caller, but the PHP runs on. Dropping it from `#running` there let a
+    // reset exit the runtime out from under a live request, defeating the drain's whole purpose.
+    const module = createPhpModule({
+      id: "/virtual/reset-timeout.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+      runtime: { timeoutMs: 200 },
+    });
+    await module.$ready();
+
+    await expect(module.$eval("usleep(1200000); return 1;")).rejects.toBeInstanceOf(
+      PhpTimeoutError,
+    );
+
+    const started = performance.now();
+    await module.$reset();
+    // The abandoned request had ~1s left to run; a reset that returned at once ignored it.
+    expect(performance.now() - started).toBeGreaterThan(500);
+
+    await module.$dispose();
+  }, 30_000);
+
   test("discards output from a call that lands during the drain", async () => {
     // Clearing before the drain let an in-flight call refill the buffer past the reset.
     const module = createPhpModule({

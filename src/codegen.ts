@@ -49,7 +49,16 @@ export function apiOnlyLines(meta: PhpModuleMeta): string[] {
 /** The trailer both generated files end with. */
 export function skippedLines(meta: PhpModuleMeta): string[] {
   if (meta.skipped.length === 0) return [];
-  return ["", "// Not exported:", ...meta.skipped.map((note) => `//   - ${note}`)];
+  return ["", "// Not exported:", ...meta.skipped.map((note) => `//   - ${oneLine(note)}`)];
+}
+
+/**
+ * A note ends up inside a `//` comment, and `define()` accepts a name containing a line terminator,
+ * which would end the comment and leave the rest of the note as bare tokens in a module that will
+ * not parse. The four characters JavaScript treats as line terminators all have to go.
+ */
+function oneLine(note: string): string {
+  return note.replace(/[\n\r\u2028\u2029]+/g, " ");
 }
 
 export interface CodegenOptions {
