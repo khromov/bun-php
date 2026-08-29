@@ -294,9 +294,10 @@ It fixes three things the in-process interpreter can't:
 
 - **Memory returns to baseline.** The wasm heap retains hundreds of MB across boot/dispose cycles
   in-process; an exiting child hands it back to the OS.
-- **`timeoutMs` exists here.** In-process a running request can't be interrupted, so bun-php offers no
-  deadline there — it's refused rather than ignored. Under isolation the deadline SIGKILLs the child,
-  the work stops, and the call rejects with `PhpTimeoutError`.
+- **`timeoutMs` exists here.** In-process a running request can't be interrupted, so bun-php has no
+  deadline there: an imported `.php` module refuses `timeoutMs` outright, and on an in-process
+  `createInterpreter` it does nothing at all. Under isolation the deadline SIGKILLs the child, the work
+  stops, and the call rejects with `PhpTimeoutError`.
 - **Calls run in parallel.** Two concurrent one-second calls take 1.04× the time of one, versus 1.96×
   in-process.
 

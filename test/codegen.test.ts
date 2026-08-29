@@ -132,8 +132,8 @@ describe("generated .d.ts", () => {
   });
 
   test("a union member carrying its own brackets is still one member", () => {
-    // Where `members()` earns its depth tracking: splitting on every ` | ` would find three
-    // members in `Record<string, unknown> | number` and parenthesise nothing.
+    // A class name converts to `Record<string, unknown>`, so a union member carries brackets of its
+    // own; `parenthesised` still has to see two members and wrap the whole union before `[]` binds.
     const { dts } = build(`function f(\\App\\Thing|int ...$rest): int {}`);
     expect(dts).toContain("...rest: (Record<string, unknown> | number)[]");
   });
