@@ -213,10 +213,15 @@ keyed by a name that comes from user PHP needs the same treatment.
 
 **php-parser's lexer can hang, and `suppressErrors` does not cover it.** `scanMode` guards two shapes.
 A malformed attribute like `#[?` makes `tokenGetAll` _throw_ `Bad terminal sequence`, which the `try`
-catches. An _unterminated_ `#[` with a newline after it puts the attribute lexer in an infinite loop
-instead, which no `try` can catch — so `hasUnterminatedAttribute` spots it before the lexer runs. Both
-fall back to "code mode, no markup first", which leaves the snippet alone so PHP reports the real
-syntax error. That inline snippets could hang the process outright is what the property test found.
+catches and answers with "code mode, no markup first" — that leaves the snippet alone so PHP reports
+the real syntax error. An _unterminated_ `#[` with a newline after it puts the attribute lexer in an
+infinite loop instead, which no `try` can catch, so `bracketBalanced` appends a `]` for every
+unmatched `[` before the lexer runs: a closing bracket is all the attribute lexer needs to terminate,
+and the padding lands past the last token, where it can change neither answer. Detecting the shape and
+bailing out was tried first and was worse — `#[` inside markup or a string never reaches attribute
+state (`echo "#[";` lexes fine), so the bail-out fired on _valid_ snippets and cost them the `<?php`
+re-entry that keeps the wrapper's closing brace out of the output. That inline snippets could hang the
+process outright is what the property test found.
 
 **Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module and the Composer
 autoloader each time because php-wasm resets request-scoped state (declared functions and autoloaders

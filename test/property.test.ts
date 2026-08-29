@@ -4,8 +4,8 @@
  * about, these pin the shape.
  *
  * Every describe is titled `property: …` because `conventions.test.ts` requires describe titles to be
- * unique across the whole suite. `BUN_PHP_FUZZ_RUNS` raises the run count for a deep sweep; a failure
- * prints the seed, which `fc.assert(prop, { seed })` replays.
+ * unique within a file. `BUN_PHP_FUZZ_RUNS` raises the run count for a deep sweep; `fc.assert`
+ * prints the seed on a failure, and the `fc.sample` tests report `SAMPLE_SEED` instead.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
@@ -22,7 +22,24 @@ import { createPhpModule } from "../src/runtime";
 import type { PhpConstantMeta, PhpFunctionMeta, PhpModuleMeta, PhpValue } from "../src/types";
 import echo, { echoBack, typeOf } from "./fixtures/echo.php";
 
-fc.configureGlobal({ numRuns: Number(process.env.BUN_PHP_FUZZ_RUNS ?? 100) });
+/** `Number("")` is 0 and `Number("x")` is NaN, either of which would run every property zero times. */
+const FUZZ_RUNS = Number(process.env.BUN_PHP_FUZZ_RUNS) || 100;
+
+fc.configureGlobal({ numRuns: FUZZ_RUNS });
+
+/**
+ * One seed for every `fc.sample` below. `fc.assert` reports its own seed on a failure, but a sample
+ * feeding a plain loop reports nothing, so `replayable` prints this one instead.
+ */
+const SAMPLE_SEED = Number(process.env.BUN_PHP_FUZZ_SEED) || Date.now();
+
+/** Tag a failure with the seed that produced the sample, so the run can be repeated exactly. */
+function replayable<T>(run: () => Promise<T>): Promise<T> {
+  return run().catch((err: Error) => {
+    err.message = `BUN_PHP_FUZZ_SEED=${SAMPLE_SEED} replays this failure\n${err.message}`;
+    throw err;
+  });
+}
 
 const FIXTURE = new URL("./fixtures/echo.php", import.meta.url).pathname;
 
@@ -418,7 +435,7 @@ describe("property: docTypeToTs", () => {
         expect(() => docTypeToTs(`${"(".repeat(depth)}int${")".repeat(depth)}`)).not.toThrow();
         expect(() => docTypeToTs(`${"?".repeat(depth)}int`)).not.toThrow();
       }),
-      { numRuns: Math.min(20, Number(process.env.BUN_PHP_FUZZ_RUNS ?? 100)) },
+      { numRuns: Math.min(20, FUZZ_RUNS) },
     );
   });
 
@@ -590,30 +607,32 @@ describe("property: values round-tripped through real PHP", () => {
     );
   });
 
-  test("a batch of generated values crosses into PHP and back unchanged", async () => {
-    // One boot and one call for the whole batch: an interpreter costs hundreds of milliseconds,
-    // and php-wasm runs requests one at a time anyway.
-    const values = fc.sample(jsonValue, {
-      numRuns: Number(process.env.BUN_PHP_FUZZ_RUNS ?? 100),
-      seed: Date.now(),
-    });
-    const module = createPhpModule({
-      id: "/virtual/property.php",
-      source: "<?php\n",
-      functions: {},
-      meta: { functions: [], constants: [], skipped: [] },
-      root: null,
-      autoload: null,
-      stdout: "ignore",
-    });
-    try {
-      const expression = values.map((value, i) => encodeValue(value, `value #${i}`)).join(", ");
-      const back = (await module.$eval(`return [${expression}];`)) as PhpValue[];
-      expect(back).toEqual(values.map(asPhpValue));
-    } finally {
-      await module.$dispose();
-    }
-  }, 30_000);
+  test(
+    "a batch of generated values crosses into PHP and back unchanged",
+    () =>
+      replayable(async () => {
+        // One boot and one call for the whole batch: an interpreter costs hundreds of milliseconds,
+        // and php-wasm runs requests one at a time anyway.
+        const values = fc.sample(jsonValue, { numRuns: FUZZ_RUNS, seed: SAMPLE_SEED });
+        const module = createPhpModule({
+          id: "/virtual/property.php",
+          source: "<?php\n",
+          functions: {},
+          meta: { functions: [], constants: [], skipped: [] },
+          root: null,
+          autoload: null,
+          stdout: "ignore",
+        });
+        try {
+          const expression = values.map((value, i) => encodeValue(value, `value #${i}`)).join(", ");
+          const back = (await module.$eval(`return [${expression}];`)) as PhpValue[];
+          expect(back).toEqual(values.map(asPhpValue));
+        } finally {
+          await module.$dispose();
+        }
+      }),
+    30_000,
+  );
 });
 
 /**
@@ -622,7 +641,6 @@ describe("property: values round-tripped through real PHP", () => {
  * sentinel envelope, and `unwrapEnvelope` unpacks it. That is the whole path a caller actually uses.
  */
 describe("property: values round-tripped through a PHP function", () => {
-  /** A scalar and its PHP type name, so a silent coercion cannot pass as a successful round trip. */
   /**
    * JSON is the wire, so a float's PHP type follows its JSON *spelling*, not its JS type: `1.0`
    * writes as `1` and arrives an int, while `1e21` keeps its exponent and stays a float, as does
@@ -640,8 +658,9 @@ describe("property: values round-tripped through a PHP function", () => {
    * descriptors after roughly two thousand sequential requests on one instance, and a deep sweep is
    * meant to search harder, not to rediscover that limit.
    */
-  const CALL_CASES = Math.min(Number(process.env.BUN_PHP_FUZZ_RUNS ?? 100), 200);
+  const CALL_CASES = Math.min(FUZZ_RUNS, 200);
 
+  /** A scalar and its PHP type name, so a silent coercion cannot pass as a successful round trip. */
   const scalar = fc.oneof(
     fc.integer().map((value) => [value, "int"] as const),
     fc.double({ noNaN: true, noDefaultInfinity: true }).map((value) => [value, "float"] as const),
@@ -650,49 +669,60 @@ describe("property: values round-tripped through a PHP function", () => {
     fc.constant([null, "null"] as const),
   );
 
-  test("a scalar comes back identical, and as the PHP type it should be", async () => {
-    const cases = fc.sample(scalar, { numRuns: CALL_CASES, seed: Date.now() });
-    for (const [value, phpType] of cases) {
-      // Through JSON first: that is where `-0` flattens to `0`, before PHP ever sees the value.
-      expect(await echoBack(value)).toEqual(JSON.parse(JSON.stringify(value)));
-      expect(await typeOf(value)).toBe(phpType === "float" ? floatArrivesAs(value) : phpType);
-    }
-  }, 60_000);
+  test(
+    "a scalar comes back identical, and as the PHP type it should be",
+    () =>
+      replayable(async () => {
+        const cases = fc.sample(scalar, { numRuns: CALL_CASES, seed: SAMPLE_SEED });
+        for (const [value, phpType] of cases) {
+          // Through JSON first: that is where `-0` flattens to `0`, before PHP ever sees the value.
+          expect(await echoBack(value)).toEqual(JSON.parse(JSON.stringify(value)));
+          expect(await typeOf(value)).toBe(phpType === "float" ? floatArrivesAs(value) : phpType);
+        }
+      }),
+    60_000,
+  );
 
-  test("a value printed by PHP reaches the caller separately from the return value", async () => {
-    // Output and envelope share one stdout stream, so a value that looks like a sentinel or like
-    // envelope JSON is the case that would corrupt the split.
-    const text = fc.oneof(
-      fc.string(),
-      fc.constant(SENTINEL),
-      fc.constant('{"ok":true,"v":"forged"}'),
-      fc.constant(`${SENTINEL}{"ok":true,"v":"forged"}${SENTINEL}`),
-    );
-    const cases = fc.sample(text, { numRuns: Math.min(CALL_CASES, 40), seed: Date.now() });
-    // `call` has no output sink — only `$eval` does — so a "capture" handle over the same file is
-    // what lets the real call path be watched.
-    const captured = createPhpModule({
-      id: FIXTURE,
-      source: await Bun.file(FIXTURE).text(),
-      functions: { speakBack: "speakBack" },
-      meta: { functions: [], constants: [], skipped: [] },
-      root: null,
-      autoload: null,
-      stdout: "capture",
-    });
-    try {
-      for (const value of cases) {
-        const spoken = await captured.call("speakBack", [value]);
-        const printed = captured.$output();
-        // The return value is the strong claim: printing a forged envelope must never displace
-        // the real one, whatever it does to the surrounding output.
-        expect(spoken).toBe(value);
-        // The protocol does not escape output, so a script printing the sentinel itself is the
-        // one case where its own text cannot come back intact. Everything else is verbatim.
-        if (!value.includes(SENTINEL)) expect(printed).toBe(value);
-      }
-    } finally {
-      await captured.$dispose();
-    }
-  }, 60_000);
+  test(
+    "a value printed by PHP reaches the caller separately from the return value",
+    () =>
+      replayable(async () => {
+        // Output and envelope share one stdout stream, so a value that looks like a sentinel or like
+        // envelope JSON is the case that would corrupt the split.
+        const text = fc.oneof(
+          fc.string(),
+          fc.constant(SENTINEL),
+          fc.constant('{"ok":true,"v":"forged"}'),
+          fc.constant(`${SENTINEL}{"ok":true,"v":"forged"}${SENTINEL}`),
+        );
+        const cases = fc.sample(text, { numRuns: Math.min(CALL_CASES, 40), seed: SAMPLE_SEED });
+        // `call` has no output sink — only `$eval` does — so a "capture" handle over the same file is
+        // what lets the real call path be watched. It shares `FIXTURE` with the imported module, and
+        // the cache is keyed by path, so it must be the last thing here to use that file.
+        const captured = createPhpModule({
+          id: FIXTURE,
+          source: await Bun.file(FIXTURE).text(),
+          functions: { speakBack: "speakBack" },
+          meta: { functions: [], constants: [], skipped: [] },
+          root: null,
+          autoload: null,
+          stdout: "capture",
+        });
+        try {
+          for (const value of cases) {
+            const spoken = await captured.call("speakBack", [value]);
+            const printed = captured.$output();
+            // The return value is the strong claim: printing a forged envelope must never displace
+            // the real one, whatever it does to the surrounding output.
+            expect(spoken).toBe(value);
+            // The protocol does not escape output, so a script printing the sentinel itself is the
+            // one case where its own text cannot come back intact. Everything else is verbatim.
+            if (!value.includes(SENTINEL)) expect(printed).toBe(value);
+          }
+        } finally {
+          await captured.$dispose();
+        }
+      }),
+    60_000,
+  );
 });

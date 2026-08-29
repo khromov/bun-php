@@ -292,6 +292,20 @@ describe("docblock unions", () => {
       "(number | string)[]",
     );
   });
+
+  test("a null nested inside a generic does not stand in for the parameter's own", () => {
+    // `?array` plus a documented `Record<..., int | null | Foo>` split naively into members and
+    // found that inner `null`, so the parameter lost the `| null` it had actually declared.
+    expect(
+      fn(`/** @param array<string, int|null|Foo> $a */ function f(?array $a) {}`).params[0]!.tsType,
+    ).toBe("Record<string, number | null | Record<string, unknown>> | null");
+  });
+
+  test("a generic holding a union needs no parentheses before `[]`", () => {
+    expect(
+      fn(`/** @param array<string, int|null>[] $a */ function f($a) {}`).params[0]!.tsType,
+    ).toBe("Record<string, number | null>[]");
+  });
 });
 
 describe("constants", () => {

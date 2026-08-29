@@ -101,13 +101,16 @@ export function phpTypeToTs(node: TypeNode): string {
 
 /** `T | null`, unless `T` already covers it. */
 export function nullable(type: string): string {
-  const covered = type === "any" || type === "void" || type.split(" | ").includes("null");
+  // Own members only: a `null` nested in `Record<string, int | null | Foo>` covers nothing, and a
+  // plain split found it there and dropped the `| null` a nullable parameter had earned.
+  const covered = type === "any" || type === "void" || members(type).includes("null");
   return covered ? type : `${type} | null`;
 }
 
 /** Unions must be wrapped before `[]` binds. */
 export function parenthesised(type: string): string {
-  return type.includes(" | ") ? `(${type})` : type;
+  // Own members again, or `Record<string, a | null>` picks up parentheses it does not need.
+  return members(type).length > 1 ? `(${type})` : type;
 }
 
 /**

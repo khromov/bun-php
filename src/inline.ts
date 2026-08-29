@@ -42,27 +42,18 @@ function tokenName(token: string | string[]): string {
 }
 
 /**
- * Whether the snippet holds a `#[` attribute that never closes and has a newline after it — the one
- * shape that sends php-parser's attribute lexer into an infinite loop rather than an error, so it
- * cannot be caught, only avoided. Brackets inside strings and comments count here, which only makes
- * the check more cautious, and the caller's fallback is safe either way.
+ * The snippet with enough `]` appended to close every unmatched `[`. An unterminated `#[` attribute
+ * sends php-parser's attribute lexer into an infinite loop no `try` can catch, and a closing bracket
+ * is all it needs to terminate; the padding lands past the last token, where it can change neither
+ * `markupFirst` nor `endsInCode`.
  */
-function hasUnterminatedAttribute(code: string): boolean {
-  for (let at = code.indexOf("#["); at !== -1; at = code.indexOf("#[", at + 2)) {
-    let depth = 0;
-    let closed = false;
-    let i = at + 1;
-    for (; i < code.length; i++) {
-      const ch = code[i];
-      if (ch === "[") depth++;
-      else if (ch === "]" && --depth === 0) {
-        closed = true;
-        break;
-      }
-    }
-    if (!closed && code.indexOf("\n", at) !== -1) return true;
+function bracketBalanced(code: string): string {
+  let open = 0;
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === "[") open++;
+    else if (code[i] === "]" && open > 0) open--;
   }
-  return false;
+  return open > 0 ? code + "]".repeat(open) : code;
 }
 
 /**
@@ -73,14 +64,12 @@ function hasUnterminatedAttribute(code: string): boolean {
  * can state `asClosureBody`'s postcondition without booting wasm.
  */
 export function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
-  // An unterminated attribute hangs the lexer outright, so it never reaches the try below.
-  if (hasUnterminatedAttribute(code)) return { markupFirst: false, endsInCode: true };
-
   // The Engine constructor mutates its options object, so build a fresh one each time.
   const engine = new Engine({ parser: { suppressErrors: true, version: 805 } });
   let tokens: (string | string[])[];
   try {
-    tokens = engine.tokenGetAll(`<?php ${code}`) as (string | string[])[];
+    // Balanced first: an unterminated `#[` hangs the lexer, which no `try` below could catch.
+    tokens = engine.tokenGetAll(`<?php ${bracketBalanced(code)}`) as (string | string[])[];
   } catch {
     // `suppressErrors` covers the parser, not the lexer, which throws outright on a malformed
     // attribute (`#[?`). Leaving the snippet alone is right for both: PHP's own error names the
