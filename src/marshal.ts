@@ -1,109 +1,97 @@
 import { phpVar } from "@php-wasm/util";
 import { PhpError, PhpFatalError } from "./errors";
 
-/**
- * Marker separating the PHP script's own output from the result envelope.
- *
- * A sentinel is used rather than relying on output buffering alone because PHP
- * flushes open buffers to stdout when a fatal error occurs, so captured output
- * can still reach stdout ahead of the envelope.
- */
-const SENTINEL = "\u0000BUNPHP\u0000";
-
-/** The same marker written as a PHP double-quoted literal. */
+// PHP flushes open output buffers to stdout on a fatal error, so a sentinel pair, not output
+// buffering, is what keeps the script's own output apart from the result.
+export const SENTINEL = "\u0000BUNPHP\u0000";
 const PHP_SENTINEL = '"\\x00BUNPHP\\x00"';
 
-interface SuccessEnvelope {
-  ok: true;
-  v: unknown;
-  out?: string;
-}
-
-interface ThrowableEnvelope {
-  ok: false;
-  e: { class: string; msg: string; file: string; line: number; trace: string };
-  out?: string;
-}
-
-interface FatalEnvelope {
-  ok: false;
-  fatal: { msg: string; file: string; line: number };
-  out?: string;
-}
-
-export type Envelope = SuccessEnvelope | ThrowableEnvelope | FatalEnvelope;
+export type Envelope =
+  | { ok: true; v: unknown; out?: string }
+  | {
+      ok: false;
+      e: { class: string; msg: string; file: string; line: number; trace: string };
+      out?: string;
+    }
+  | { ok: false; fatal: { msg: string; file: string; line: number }; out?: string };
 
 const MAX_INT64 = 2n ** 63n - 1n;
 const MIN_INT64 = -(2n ** 63n);
 
-/**
- * Encode JS arguments as a PHP argument list.
- *
- * Trailing `undefined` arguments are dropped so PHP parameter defaults apply —
- * the natural meaning of forwarding an optional value that was never set. An
- * `undefined` hole before a defined argument has no PHP spelling, so it is
- * rejected rather than silently sent as `null`.
- */
+/** Encode JS arguments as a PHP argument list. Trailing `undefined`s are dropped so PHP defaults apply. */
 export function encodeArgs(args: readonly unknown[], label = "call"): string {
   let length = args.length;
   while (length > 0 && args[length - 1] === undefined) length--;
-
-  const parts: string[] = [];
-  for (let i = 0; i < length; i++) {
-    parts.push(encodeValue(args[i], `${label}: argument #${i + 1}`));
-  }
-  return parts.join(", ");
+  // Indexed rather than `.map`, which skips holes: `f(, 1)` must report the hole, not emit `f(, 1)`.
+  return Array.from({ length }, (_, i) =>
+    encodeValue(args[i], `${label}: argument #${i + 1}`),
+  ).join(", ");
 }
 
-/**
- * Encode one JS value as a PHP expression. `context` names the value in error
- * messages, e.g. `greet: argument #1` or `BunPHP: interpolation #2`.
- */
-export function encodeValue(value: unknown, context: string): string {
-  if (value === undefined) {
-    throw new TypeError(`${context} is undefined; pass null instead`);
+/** Where a non-finite number hides inside `value`, if anywhere; `phpVar`'s JSON path turns it to null. */
+function nonFinitePath(value: unknown, path: string, seen: WeakSet<object>): string | null {
+  if (typeof value === "number") return Number.isFinite(value) ? null : path;
+  if (value === null || typeof value !== "object") return null;
+  // A cycle would recurse forever; leave it for `phpVar`, which reports it as an encoding failure.
+  if (seen.has(value)) return null;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.reduce<string | null>(
+      (found, item, i) => found ?? nonFinitePath(item, `${path}[${i}]`, seen),
+      null,
+    );
   }
+  return Object.entries(value).reduce<string | null>(
+    (found, [key, item]) => found ?? nonFinitePath(item, `${path}.${key}`, seen),
+    null,
+  );
+}
+
+/** Encode one JS value as a PHP expression; `context` names it in error messages. */
+export function encodeValue(value: unknown, context: string): string {
+  if (value === undefined) throw new TypeError(`${context} is undefined; pass null instead`);
   if (typeof value === "bigint") {
     if (value < MIN_INT64 || value > MAX_INT64) {
       throw new TypeError(`${context} (${value}n) overflows PHP's 64-bit int`);
     }
-    // PHP parses `-9223372036854775808` as unary minus on an overflowing
-    // int literal (yielding a float), so PHP_INT_MIN needs the classic spelling.
+    // PHP reads `-9223372036854775808` as a negated float literal, so PHP_INT_MIN needs the classic spelling.
     return value === MIN_INT64 ? "(-9223372036854775807 - 1)" : value.toString();
   }
   if (typeof value === "number" && !Number.isFinite(value)) {
     return Number.isNaN(value) ? "NAN" : value > 0 ? "INF" : "-INF";
   }
   try {
+    // Only a top-level one has a PHP literal to become; nested, JSON would silently make it null.
+    // Inside the same `try` as `phpVar`, so a throwing getter reads the same either side of it.
+    const nested = nonFinitePath(value, "", new WeakSet());
+    if (nested !== null) {
+      throw new TypeError(
+        `${context} holds a non-finite number at ${nested}; NaN and Infinity survive only as a whole argument`,
+      );
+    }
     return phpVar(value as never);
   } catch (err) {
+    if (err instanceof TypeError && err.message.startsWith(context)) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     throw new TypeError(`${context} could not be encoded: ${reason}`);
   }
 }
 
 /**
- * Build the PHP script for one call.
- *
- * Every call re-`require_once`s the module: php-wasm resets request-scoped PHP
- * state (declared functions included) between runs, so the include is both
- * necessary and safe from redeclaration errors.
+ * The PHP script for one call. Both `require_once`s run on every call because php-wasm resets
+ * request state (declared functions and autoloaders included) between runs.
  */
 export function buildCallScript(
   modulePath: string,
   expression: string,
   autoloadPath?: string | null,
 ): string {
-  // Composer's autoloader has to be registered again for every call, because
-  // php-wasm resets request-scoped state (including declared functions and
-  // registered autoloaders) between runs.
-  const prelude = autoloadPath ? `    require_once ${phpVar(autoloadPath as never)};\n` : "";
+  const autoload = autoloadPath ? `    require_once ${phpVar(autoloadPath as never)};\n` : "";
 
   return `<?php
 ini_set('html_errors', '0');
-// Unbuffered, so \`echo\` reaches stdout while the request is still running
-// rather than arriving in one piece at the end of it. The envelope is what
-// separates that output from the result, which is why it can be let through.
+// Unbuffered, so echo reaches stdout while the request is still running.
 ob_implicit_flush(true);
 $__bunphp_sent = false;
 $__bunphp_emit = function (array $r) use (&$__bunphp_sent) {
@@ -126,17 +114,13 @@ $__bunphp_emit = function (array $r) use (&$__bunphp_sent) {
                 'trace' => '',
             ],
         ], JSON_INVALID_UTF8_SUBSTITUTE);
-        if ($json === false) {
-            $json = '{"ok":false,"out":"","e":{"class":"JsonException","msg":"Return value could not be encoded","file":"","line":0,"trace":""}}';
-        }
     }
     echo ${PHP_SENTINEL} . $json . ${PHP_SENTINEL};
 };
 register_shutdown_function(function () use ($__bunphp_emit, &$__bunphp_sent) {
     if ($__bunphp_sent) { return; }
     $err = error_get_last();
-    // Only a fatal error explains reaching shutdown without a result; a stale
-    // warning or notice from earlier in the request must not be blamed.
+    // Only a fatal error explains reaching shutdown without a result; a stale warning must not be blamed.
     $fatal = $err !== null && ($err['type'] & (E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR)) !== 0;
     $__bunphp_emit([
         'ok' => false,
@@ -148,9 +132,8 @@ register_shutdown_function(function () use ($__bunphp_emit, &$__bunphp_sent) {
     ]);
 });
 try {
-${prelude}    require_once ${phpVar(modulePath as never)};
-    $__bunphp_v = ${expression};
-    $__bunphp_emit(['ok' => true, 'v' => $__bunphp_v]);
+${autoload}    require_once ${phpVar(modulePath as never)};
+    $__bunphp_emit(['ok' => true, 'v' => ${expression}]);
 } catch (\\Throwable $e) {
     $__bunphp_emit([
         'ok' => false,
@@ -170,82 +153,65 @@ ${prelude}    require_once ${phpVar(modulePath as never)};
 const TAIL_LIMIT = 8192;
 
 /**
- * Split stdout into the script's own output and the result envelope, as the
- * bytes arrive.
- *
- * The envelope sits between a sentinel pair, because output can surround it on
- * both sides: PHP flushes open buffers to stdout ahead of the envelope on a
- * fatal error, and user shutdown functions or destructors can still print
- * after the envelope has been emitted.
- *
- * Feeding it a chunk at a time is what lets `echo` reach the terminal while the
- * request is still running, and costs three pieces of bookkeeping:
- *
- *   - a sentinel can straddle a chunk boundary, so a tail that could still grow
- *     into one is held back rather than emitted;
- *   - text between sentinels that turns out not to be JSON was never an
- *     envelope, so it is put back on the wire verbatim;
- *   - the last valid envelope wins, as it does over a complete string, so once
- *     one has been seen the output after it is held until the stream ends —
- *     that way a later envelope can supersede it without the two arriving out
- *     of order.
+ * Splits stdout into script output and the result envelope as chunks arrive, so `echo` reaches
+ * the terminal while the request is still running. Three things follow from that: a sentinel can
+ * straddle a chunk, so a tail that could still grow into one is held back; a sentinel pair whose
+ * contents are not JSON was never an envelope, so it is put back verbatim; and the last valid
+ * envelope wins, so output after one is held until the stream ends in case a later one supersedes it.
  */
 export class EnvelopeSplitter {
-  /** Unclassified text, or the envelope JSON so far once `#open` is set. */
+  /** Unclassified text, or envelope JSON so far while `#inEnvelope`. */
   #buffer = "";
-  #open = false;
+  #inEnvelope = false;
   #envelope: Envelope | null = null;
-  /** The winning envelope's raw text, re-emitted if a later one supersedes it. */
-  #raw = "";
+  /** The winning envelope's raw text, re-emitted as output if a later one supersedes it. */
+  #envelopeText = "";
   /** Output seen after the winning envelope, released when the stream ends. */
-  #held = "";
+  #afterEnvelope = "";
   #tail = "";
 
-  constructor(private readonly write: (text: string) => void) {}
+  constructor(private readonly output: (text: string) => void) {}
 
-  /** Feed the next chunk of stdout. */
   push(text: string): void {
     if (!text) return;
     this.#buffer += text;
 
     for (;;) {
-      const index = this.#buffer.indexOf(SENTINEL);
-      if (index === -1) break;
-      const segment = this.#buffer.slice(0, index);
-      this.#buffer = this.#buffer.slice(index + SENTINEL.length);
-      if (this.#open) this.#accept(segment);
+      const at = this.#buffer.indexOf(SENTINEL);
+      if (at === -1) break;
+      const segment = this.#buffer.slice(0, at);
+      this.#buffer = this.#buffer.slice(at + SENTINEL.length);
+      if (this.#inEnvelope) this.#closeEnvelope(segment);
       else {
-        this.#out(segment);
-        this.#open = true;
+        this.#emit(segment);
+        this.#inEnvelope = true;
       }
     }
 
-    // While open, the buffer is envelope JSON and stays put until its partner
-    // sentinel shows up. Otherwise release all of it but a partial sentinel.
-    if (this.#open) return;
-    const keep = this.#partialSentinel();
-    if (keep < this.#buffer.length) {
-      this.#out(this.#buffer.slice(0, this.#buffer.length - keep));
-      this.#buffer = this.#buffer.slice(this.#buffer.length - keep);
-    }
+    // Envelope JSON stays put until its closing sentinel; otherwise release all but a partial sentinel.
+    if (this.#inEnvelope) return;
+    const keep = this.#partialSentinelLength();
+    this.#emit(this.#buffer.slice(0, this.#buffer.length - keep));
+    this.#buffer = this.#buffer.slice(this.#buffer.length - keep);
   }
 
   /** Close the stream and return the envelope, if one arrived. */
   end(): Envelope | null {
-    if (this.#open) {
-      // A lone sentinel: the process died before the closing one was written,
-      // so whatever followed is the best guess at the envelope.
+    if (this.#inEnvelope) {
+      // A lone sentinel: the process died before the closing one, so what followed is the best guess.
       const json = this.#buffer;
       this.#buffer = "";
-      this.#open = false;
-      if (!this.#take(json, SENTINEL + json)) this.#out(SENTINEL + json);
-    } else if (this.#buffer) {
-      this.#out(this.#buffer);
+      this.#inEnvelope = false;
+      if (!this.#tryEnvelope(json, SENTINEL + json)) this.#emit(SENTINEL + json);
+    } else {
+      this.#emit(this.#buffer);
       this.#buffer = "";
     }
-
-    this.#flush(this.#held);
-    this.#held = "";
+    // Buffers the script left open were filled before the envelope was emitted, so they come first.
+    const buffered = this.#envelope?.out;
+    if (buffered) this.#write(buffered);
+    this.#write(this.#afterEnvelope);
+    this.#afterEnvelope = "";
     return this.#envelope;
   }
 
@@ -254,82 +220,60 @@ export class EnvelopeSplitter {
     return this.#tail;
   }
 
-  /** Handle the text between a sentinel pair. */
-  #accept(json: string): void {
-    this.#open = false;
-    if (this.#take(json, SENTINEL + json + SENTINEL)) return;
-    // Not JSON, so it was never an envelope — user output that happened to
-    // contain the marker. Put it back exactly as it came.
-    this.#out(SENTINEL + json + SENTINEL);
+  #closeEnvelope(json: string): void {
+    if (this.#tryEnvelope(json, SENTINEL + json + SENTINEL)) {
+      this.#inEnvelope = false;
+      return;
+    }
+    // Not JSON means it was never an envelope, just output that happened to contain the marker. Only
+    // the opening sentinel is put back: staying in-envelope re-uses the closing one as an opener, so
+    // a stray sentinel in the output cannot shift the pairing and hide the real envelope after it.
+    this.#emit(SENTINEL + json);
   }
 
-  /** Adopt `json` as the envelope, superseding any earlier one. */
-  #take(json: string, raw: string): boolean {
+  /** Adopt `json` as the envelope, turning any earlier one back into output. */
+  #tryEnvelope(json: string, raw: string): boolean {
     let parsed: Envelope;
     try {
       parsed = JSON.parse(json) as Envelope;
     } catch {
       return false;
     }
-
     if (this.#envelope) {
-      // The earlier envelope was output after all, and came first.
-      this.#flush(this.#raw);
-      this.#flush(this.#held);
-      this.#held = "";
+      this.#write(this.#envelopeText);
+      this.#write(this.#afterEnvelope);
+      this.#afterEnvelope = "";
     }
-
     this.#envelope = parsed;
-    this.#raw = raw;
+    this.#envelopeText = raw;
     return true;
   }
 
   /** How many trailing characters could still grow into a sentinel. */
-  #partialSentinel(): number {
-    const max = Math.min(SENTINEL.length - 1, this.#buffer.length);
-    for (let k = max; k > 0; k--) {
+  #partialSentinelLength(): number {
+    for (let k = Math.min(SENTINEL.length - 1, this.#buffer.length); k > 0; k--) {
       if (this.#buffer.endsWith(SENTINEL.slice(0, k))) return k;
     }
     return 0;
   }
 
-  #out(text: string): void {
+  // Output after an envelope is held, so a later envelope can still supersede it in order.
+  #emit(text: string): void {
     if (!text) return;
-    // Once an envelope has been seen, hold its trailing output back so that a
-    // later envelope can supersede it and still emit in order.
-    if (this.#envelope) this.#held += text;
-    else this.#flush(text);
+    if (this.#envelope) this.#afterEnvelope += text;
+    else this.#write(text);
   }
 
-  #flush(text: string): void {
+  #write(text: string): void {
     if (!text) return;
     this.#tail = (this.#tail + text).slice(-TAIL_LIMIT);
-    this.write(text);
+    this.output(text);
   }
-}
-
-/**
- * Split a complete stdout string, the same way `EnvelopeSplitter` splits a
- * stream. Kept for callers that already have the whole thing in hand.
- */
-export function decodeOutput(stdout: string): {
-  out: string;
-  envelope: Envelope | null;
-} {
-  let out = "";
-  const splitter = new EnvelopeSplitter((text) => {
-    out += text;
-  });
-  splitter.push(stdout);
-  // `end()` first: it releases the output held back after the envelope.
-  const envelope = splitter.end();
-  return { out, envelope };
 }
 
 /** Turn an envelope into either the return value or a thrown error. */
 export function unwrapEnvelope(envelope: Envelope, label: string): unknown {
   if (envelope.ok) return envelope.v;
-
   if ("fatal" in envelope) {
     throw new PhpFatalError(
       `${label}: ${envelope.fatal.msg}`,
@@ -337,7 +281,6 @@ export function unwrapEnvelope(envelope: Envelope, label: string): unknown {
       envelope.fatal.line,
     );
   }
-
   throw new PhpError(
     `${label}: ${envelope.e.class}: ${envelope.e.msg}`,
     envelope.e.class,
@@ -346,5 +289,3 @@ export function unwrapEnvelope(envelope: Envelope, label: string): unknown {
     envelope.e.trace,
   );
 }
-
-export { SENTINEL };

@@ -15,6 +15,9 @@ bun install
 bun test                          # all tests
 bun test test/parse.test.ts       # one file
 bun test -t "variadic"            # one test by name
+bun run test:versions             # the cross-version compatibility suite (installed builds only)
+bun run php-builds:install        # install every @php-wasm/node-8-* build (~370 MB), then
+bun run php-builds:install 8.1    #   just one; both leave package.json and bun.lock untouched
 bun run example                   # example/index.ts against example/hello.php
 bun run demos                     # demos/index.ts against real Composer packages
 bun run typecheck                 # bunx tsc -p tsconfig.json (noEmit)
@@ -49,25 +52,25 @@ onLoad (plugin.ts)
 
 The generated module imports `createPhpModule` from `runtime.ts` and exports one async wrapper per PHP
 function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, decode the result) →
-`php-runtime.ts` (the interpreter).
+`interpreter.ts` → `php-runtime.ts` (the interpreter).
 
-| File                                           | Responsibility                                                                                |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `src/plugin.ts`                                | `onLoad` hook, option defaults, sidecar writing                                               |
-| `src/register.ts`                              | Side-effecting `plugin(phpPlugin())` for `preload`                                            |
-| `src/parse.ts`                                 | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes)                           |
-| `src/php-types.ts`                             | PHP type hints and docblock types → TypeScript type expressions                               |
-| `src/codegen.ts`                               | Emits the JS module                                                                           |
-| `src/dts.ts`                                   | Emits the `.d.ts` sidecar                                                                     |
-| `src/runtime.ts`                               | Interpreter cache, lifecycle (`$ready`/`$reset`/`$dispose`), stdout modes                     |
-| `src/inline.ts`                                | The `` BunPHP`...` `` tagged template for file-less snippets                                  |
-| `src/marshal.ts`                               | The JS ⇄ PHP call protocol                                                                    |
-| `src/project.ts`                               | Walks up from a `.php` file to find its Composer root and autoloader                          |
-| `src/php-runtime.ts`                           | The only module importing `@php-wasm/*`, the version→build map, plus the NODEFS mount handler |
-| `src/interpreter.ts`                           | `createInterpreter` — a configured interpreter with no `.php` file behind it                  |
-| `src/journal.ts`                               | Serializable filesystem/config ops, replayed on instance replacement and shipped to children  |
-| `src/isolation.ts` + `src/isolation-runner.ts` | `isolation: "process"` — parent spawn/timeout half and the child entrypoint                   |
-| `types/php.d.ts`                               | Fallback `*.php` module declaration for users not generating sidecars                         |
+| File                                           | Responsibility                                                                                       |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/plugin.ts`                                | `onLoad` hook, option defaults, sidecar writing                                                      |
+| `src/register.ts`                              | Side-effecting `plugin(phpPlugin())` for `preload`                                                   |
+| `src/parse.ts`                                 | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes)                                  |
+| `src/php-types.ts`                             | PHP type hints and docblock types → TypeScript type expressions                                      |
+| `src/codegen.ts`                               | Emits the JS module; owns the aliasing helpers (`bindingNameFor`, `exportLines`) dts.ts shares       |
+| `src/dts.ts`                                   | Emits the `.d.ts` sidecar                                                                            |
+| `src/runtime.ts`                               | `PhpInstance` (a `PhpInterpreter` plus call streaming, stdout modes, the `--hot` cache) and `$`-API  |
+| `src/inline.ts`                                | The `` BunPHP`...` `` tagged template for file-less snippets                                         |
+| `src/marshal.ts`                               | The JS ⇄ PHP call protocol                                                                           |
+| `src/project.ts`                               | Walks up from a `.php` file to find its Composer root and autoloader                                 |
+| `src/php-runtime.ts`                           | The only module that _calls_ `@php-wasm/*`: version→build map, `bootPhp`, journal ops, mount handler |
+| `src/interpreter.ts`                           | `PhpInterpreter` — lazy boot, journal, `cli()`, timeouts, and the `isolation: "process"` dispatch    |
+| `src/isolation.ts` + `src/isolation-runner.ts` | `isolation: "process"` — parent spawn/timeout half and the child entrypoint                          |
+| `src/types.ts`                                 | Every public type, so no module imports another in a cycle                                           |
+| `types/php.d.ts`                               | Fallback `*.php` module declaration for users not generating sidecars                                |
 
 ## Things that will bite you
 
@@ -80,8 +83,69 @@ because the top-level `preload` does not apply to `bun test`. The e2e tests depe
 
 **Interpreters are cached on `globalThis`** (`__bunPhpInstances` in `runtime.ts`), not in a module variable —
 `bun --hot` resets the module registry on every save and would otherwise leak an interpreter per edit. The
-same reason drives the "skip the write if the content is unchanged" guard in `writeSidecar`: rewriting churns
-mtime and retriggers the watcher in a loop.
+cache key is `JSON.stringify` of everything serialisable (source, stdout mode, root, autoload, runtime
+options); `loader` and `spawn` are functions and are compared by identity. Anything new that changes which
+interpreter to boot must land in that key, or a caller asking for it silently gets the cached one. The same
+`--hot` concern drives the "skip the write if the content is unchanged" guard in `writeSidecar`: rewriting
+churns mtime and retriggers the watcher in a loop.
+
+**An autoloader is only ever required when the root is mounted.** `plugin.ts` passes `autoload: false` to
+`resolveProject` when `mount: false`, and `PhpInstance` drops the autoload path whenever it takes the
+mkdir+writeFile fallback instead of mounting — a `require_once` of a host path that is not in the virtual
+filesystem is an `E_COMPILE_ERROR` on _every_ call, not just the first. That includes an explicitly
+configured `autoload: "<path>"`: emitting it under `mount: false` produced dead configuration, since
+`PhpInstance` drops it again anyway. Reach for `createPhpModule` directly to pair a root-less module
+with an autoloader you mount yourself.
+
+**Short tags are pinned off, which is why nothing has to keep the parser and the runtime in step.**
+`PINNED_INI` in `php-runtime.ts` is applied by `bootPhp` _after_ the journal, so no op can outrank it, and
+php-parser's own default already matches — no `lexer` options, no invariant to remember. PHP's built-in
+default is on only because no `php.ini` ships with the wasm builds, and that disagreement made a `<?` file
+export nothing while the runtime happily ran it. `withoutPinned` logs and then _strips_ the entry, because
+`ini()` applies to an instance that is already running, where the boot-time pin never gets to correct
+it — warning about an override that still took effect was the worst of both. `<?=` is unaffected: it has been
+unconditional since PHP 5.4.
+
+**One journal configures every instance.** A `JournalOp` (`php-runtime.ts`) is plain data: mount, mkdir,
+writeFile, ini. `PhpInterpreter` turns its `ini`/`mounts` options into journal ops at construction and
+`bootPhp(options, ops)` replays them onto every fresh instance, so there is no separate "apply options" step
+to drift from it. `PhpInstance` seeds its interpreter's journal with either a mount of the project root or —
+when the _module file_ is not on disk, a bundle running elsewhere — a mkdir plus writeFile of the inlined
+source. The gate is the file, not the directory: a root that exists without the file mounts happily and
+then fatals on the `require_once` of every call. The same journal is what `isolation: "process"` ships to its child.
+
+**`PHP.cli()` consumes its instance.** It calls `exit()` on the runtime when the command finishes, and a
+second `cli()` on the same instance returns exit code **-1 with no output and no error at all**. So `#cli`
+takes the boot promise and sets `#instance` to `null` _before_ awaiting it; the next `cli()` (or `mount()`)
+boots a replacement and replays the journal. `#apply` awaits `php()` _before_ recording an op, because a
+boot replays the journal and recording first would run the new op twice on the very first call.
+
+**A journal op is recorded only once it has applied.** `#apply` boots first (a boot replays the journal, so
+recording first would run the op twice) and pushes only after `applyOp` resolves. Pushing first meant a
+`mount()` that rejected still replayed onto every later boot: the caller was told it failed while it broke
+every subsequent `cli()` with an opaque error.
+
+**In-process `timeoutMs` bounds waiting, wherever it is set.** `withDeadline` in `interpreter.ts` is the
+one implementation: `PhpInterpreter` uses it for `cli()` and sets `retired`, and `PhpInstance.run` uses it
+for module calls, where there is no flag to set and later calls simply queue behind the abandoned request.
+A module's `timeoutMs` used to be accepted, documented and silently ignored. Both arm the deadline _after_
+`php()` resolves, so a cold call does not spend its budget on a boot the caller cannot influence — only
+`isolation: "process"` counts startup, because a spawned child gives no point to start the clock later.
+That is the same reason `killedByDeadline` in `isolation.ts` requires a `signalCode`: a timer firing as the
+child exits kills a corpse and would otherwise discard the complete reply it left in stdout. `PhpInstance`
+keeps the request in `#running` after the deadline rejects, so a later `$reset()` still drains the PHP that
+is genuinely still executing.
+
+**A rejected boot is not cached.** `php()` clears `#instance` when `bootPhp` rejects, so a transient
+failure does not replay on every later call until `$reset()`. `dispose()` clears `retired` for the same
+reason: the replacement instance is nobody's abandoned request.
+
+**`$reset()` and `$dispose()` are lazy.** Both wait for in-flight calls (`#running`), then `dispose()` the
+interpreter; `reset()` clears the captured buffer _after_ that drain, or a call finishing during it refills
+the buffer past the reset. the next call re-boots and the journal re-mounts the root from scratch. That is why
+php-wasm's `hotSwapPHPRuntime` is not used — a hot swap would copy the old MEMFS across, and `$reset` exists
+to discard it. `$dispose` also drops the cache entry, but only while it still points at this instance, so
+disposing a stale `--hot` handle does not evict its replacement.
 
 **The call protocol is a JSON envelope between a sentinel pair**, not plain stdout parsing. PHP flushes open
 output buffers to stdout on a fatal error, so the script's own `echo` output can land ahead of the envelope,
@@ -91,78 +155,131 @@ change in `EnvelopeSplitter`/`unwrapEnvelope`.
 
 **Output is streamed, which is why `buildCallScript` does not `ob_start()`.** The script runs unbuffered
 (`ob_implicit_flush(true)`) so `echo` reaches stdout as it happens, and `runtime.ts` reads `runStream()`'s
-`response.stdout` chunk by chunk instead of awaiting `stdoutText` — a slow script prints while it is still
-running. `EnvelopeSplitter` in `marshal.ts` does the classifying, which is harder than it is over a complete
-string: a sentinel can straddle a chunk boundary (so a tail that could still grow into one is held back), a
-sentinel pair whose contents are not JSON was never an envelope (so it is put back on the wire verbatim), and
+`response.stdout` chunk by chunk instead of awaiting `stdoutText`. `EnvelopeSplitter` in `marshal.ts` does the
+classifying: a sentinel can straddle a chunk boundary (so a tail that could still grow into one is held
+back), a sentinel pair whose contents are not JSON was never an envelope (so it is put back verbatim), and
 _last pair wins_ means output after an envelope is held until the stream ends, in case a later one supersedes
-it. `decodeOutput` is the same splitter fed a whole string, so the two cannot drift. Only buffers the _user's_
-code opened and left open still arrive in the envelope's `out` field.
+it. `test/marshal.test.ts` feeds the splitter whole strings and chunk-by-chunk, so the two cannot drift.
+A failed pair puts back only its _opening_ sentinel and stays in-envelope, so the closing one becomes the
+next opener: otherwise one stray sentinel in the script's output shifts the pairing by one and the real
+envelope is emitted as text.
+Only buffers the _user's_ code opened and left open still arrive in the envelope's `out` field, and
+`end()` releases them before the output held after the envelope, because PHP wrote them first.
 
-**Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module each time because
-php-wasm resets request-scoped state (declared functions included) between runs. That is also why `static`
-variables and globals do not persist across calls — a documented limitation, and `test/e2e.test.ts` asserts it.
+**Values cross by JSON, so `NaN`/`Infinity` only survive as a whole argument.** `encodeValue` turns a
+top-level one into PHP's `NAN`/`INF`, but `phpVar` encodes anything else through JSON, where they become
+`null`; `nonFinitePath` finds a nested one and throws instead of losing it silently — it carries a `WeakSet`,
+because a cycle would otherwise blow the stack before `phpVar` could report it as an encoding failure.
+Nested `undefined` is deliberately _not_ in that rule: it follows JSON, becoming `null` in an array and a
+dropped key in an object, which is what JavaScript callers already expect. `encodeArgs` builds its
+list by index rather than `.map`, which skips array holes and used to emit the invalid `f(, 1)`.
 
-**The project directory is mounted, not copied.** `runtime.ts` mounts the resolved root over NODEFS, which
-is a live view of the host FS — that is what makes sibling `require`, `__DIR__` and Composer work. The
-inlined-source `writeFile` path is only a fallback for when the directory is not on disk (a bundle running
-elsewhere). `$reset()`/`$dispose()` tear the runtime down with `php.exit()` rather than `hotSwapPHPRuntime`
-(a hot swap would copy the old MEMFS across), so the next call re-boots and `#populate` re-mounts the root
-from scratch — there is no mount to preserve.
+**Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module and the Composer
+autoloader each time because php-wasm resets request-scoped state (declared functions and autoloaders
+included) between runs. That is also why `static` variables and globals do not persist across calls — a
+documented limitation, and `test/e2e.test.ts` asserts it.
 
-**Composer's autoloader is re-required on every call** (`buildCallScript`), because request state resets. This
-is why `demos/` works at all, and why warm-call cost tracks how much the library does per call.
+**Calls on one instance never overlap, and nothing in bun-php queues them.** php-wasm's `runStream` holds a
+concurrency-1 semaphore until the request finishes, and every response has its own stdout stream. That is
+why `inline.ts` has no task queue and `PhpInstance` has no lifecycle serialiser: `test/inline.test.ts`
+fires twelve concurrent captures and asserts their outputs and return values stay separate.
 
 **The inline tag prints; `BunPHP.capture` returns.** `BunPHP` matches the plugin's `stdout: "inherit"`
-default — `echo` goes to the terminal as PHP writes it, and the promise resolves to the top-level `return`
-(or `null`) — while `BunPHP.capture` resolves to the output and prints nothing. Both share _one_ interpreter,
+default, while `BunPHP.capture` resolves to the output and prints nothing. Both share _one_ interpreter,
 created `"inherit"`: `capture` passes `$eval` an output sink, which overrides the instance's stdout mode for
-that call alone. A sink rather than a shared buffer is what keeps a snippet that throws part-way through
-printing from leaving its output behind for the next snippet — and it is the reason `capture` did not have to
-cost a second WebAssembly runtime.
+that call alone. A sink per call is what keeps a snippet that throws part-way through printing from leaving
+its output behind for the next snippet.
+
+**Inline snippets are read from `strings.raw`, not the cooked segments.** The snippet is PHP source, and
+cooked strings let JavaScript consume its escapes first: `preg_match('/\d+/')` silently became `/d+/`, a
+leading `\` on a class name disappeared, and an invalid escape made the segment `undefined`, which `?? ""`
+turned into an erased snippet returning `null`. Raw segments are never `undefined`, so both go away together.
+The cost is that a template's `\n` is now PHP's escape rather than JavaScript's; write real newlines.
 
 **Inline snippets interpolate as expressions, not text.** `src/inline.ts` runs every interpolated value
-through `encodeValue()` from `marshal.ts`, so a value can never be executed as code (and `undefined`/BigInt
-edge cases get named errors); `test/inline.test.ts` asserts that with real injection payloads. It also strips a leading open tag (the snippet is evaluated inside a closure) and
-re-enters PHP mode when a snippet ends in markup, or the wrapper's closing brace becomes literal text.
+through `encodeValue()` from `marshal.ts`, so a value can never be executed as code; `test/inline.test.ts`
+asserts that with real injection payloads. `asClosureBody` strips a leading open tag (the snippet is
+evaluated inside a closure) and re-enters PHP mode when a snippet ends in markup, or the wrapper's closing
+brace becomes literal text. Which tags are real is decided by `scanMode`, which runs php-parser's lexer
+(`tokenGetAll`), not `includes`/`lastIndexOf`: a `<?` or `?>` inside a string literal, heredoc/nowdoc or
+block comment is not a tag, while one inside a `//`/`#` line comment _is_ a real close, exactly as PHP reads
+it. `tokenGetAll` has no eval mode (the `mode_eval` lexer option does not reach it), so the snippet gets a
+`<?php ` prefix to start the lexer in code mode, and a `<` token immediately followed by `?` is what marks a
+snippet that meant to open with markup — no valid PHP puts those two adjacent. That makes `inline.ts` the
+second consumer of php-parser after `parse.ts`; do not hand-roll the scan back. `asClosureBody` is exported
+so `test/inline.test.ts` can unit-test the rules without booting wasm, and its one `OPEN_TAG` pattern does
+both the test and the strip so the two cannot disagree.
 
 **Aliasing has one source of truth.** `bindingNameFor` (exported from `codegen.ts`) decides the local binding
-for a PHP name; `codegen.ts`, `dts.ts` and the uniqueness guard in `parse.ts` all call it so they cannot drift.
+for a PHP name, and `exportLines` turns that into either a direct export or an alias plus re-export;
+`codegen.ts`, `dts.ts` and the uniqueness guard in `parse.ts` all go through them so they cannot drift.
 `parse.ts` also reserves the generated module's own identifiers (`__mod`, `createPhpModule`, `_default`,
 `default`), skipping any PHP name that would collide — `define()` accepts names a `const` declaration cannot.
+Separately, `API_NAME` in `codegen.ts` is the one name (`call`) a PHP function shares with the module
+API: the function stays a named export, but `dts.ts` leaves it off the `_default` block and both
+generators emit a "Named export only" trailer, because a second `call` key is a TS2717 and at runtime the
+API wins anyway — which is why `createPhpModule` lists `call` _after_ the function spread. Every other API
+member is `$`-prefixed and a PHP function name cannot start with `$`, so `call` is the whole list.
+A constant whose value JavaScript cannot reproduce faithfully is `NOT_LITERAL` rather than a guess: an
+array key past 2^53 (rounding it collides two entries or restarts the implicit key at zero), and an
+implicit key following a negative one, which PHP 8.3 resumes at `-4` where 8.0-8.2 restart at `0` — the
+parser has no idea which build `phpVersion` will select. `isDefineCall` strips one leading `\` before
+comparing, because namespaced code writes `\define(...)` to skip the runtime fallback lookup; `A\define`
+is a genuinely different function and stays ignored.
 `RESERVED` in `codegen.ts` is _ECMAScript's_ invalid-binding list (reserved words + strict-mode additions +
 `arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
 transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,
 so `Bun.Transpiler` alone is not proof a generated module loads — `test/e2e.test.ts` imports a `yield`
-constant through the real loader for exactly that reason.
+constant through the real loader for exactly that reason. Generated `.d.ts` output must stay byte-identical
+across refactors: `example/hello.php.d.ts` and `demos/php/*.php.d.ts` are committed.
 
-**Type-mapping changes** go in `php-types.ts` (`BUILTIN_TS` for declarations, `convertDocPart` for docblocks).
-The precedence rule lives in `chooseType` in `parse.ts`: a real type declaration wins, _except_ that bare
-`array` and `mixed` defer to a `@param`/`@return` docblock tag.
+**Type-mapping changes** go in `TS_TYPES` in `php-types.ts` (declared keywords and docblock-only spellings
+share the one map; `convertDocPart` handles the docblock syntax around them). The precedence rule lives in
+`chooseType` in `parse.ts`: a real type declaration wins, _except_ that bare `array` and `mixed` defer to a
+`@param`/`@return` docblock tag.
+
+**The plugin's `runtime` option is the serialisable half of `PhpRuntimeOptions`.** It is emitted into the
+generated module by `generateModule`, so `PhpModuleRuntimeOptions` drops `loader` and function-valued
+`spawn` (neither survives `JSON.stringify`) and `isolation` (which `createPhpModule` refuses outright);
+`assertSerialisable` in `plugin.ts` repeats that check for JavaScript callers. The key is omitted entirely
+when unset, so a module without runtime options generates byte-identically to before.
 
 **PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
-`@php-wasm/node-X-Y` resolved with a dynamic `import()`. Only 8.5 is a real dependency; the rest are optional
-peer dependencies, because each build is tens of MB of wasm. Adding an option that changes the interpreter
-means adding it to the cache comparison in `createPhpModule` too — `runtimeKey()` covers the serialisable
-options and `loader`/`spawn` are compared by identity, since without that a caller asking for a different PHP
-version silently gets back the cached interpreter running the old one. `@php-wasm/node` is deliberately
-avoided — it statically imports a NAN native addon that throws at module-evaluation time when its binding
-fails to load.
+`@php-wasm/node-X-Y` resolved with a dynamic `import()`. `buildImportError` classifies a failed import
+rather than assuming: only an `ERR_MODULE_NOT_FOUND` whose `specifier` is the build package itself is
+`PhpBuildNotInstalledError` with its `bun add` advice — a transitive dependency failing inside an installed
+build would otherwise be answered with "install what you already have" —
+and anything else — a build that resolved but threw — is `PhpBuildLoadError`, so the message never sends
+someone to install what they already have. Only 8.5 is a real dependency; the rest are optional
+peer dependencies, because each build is tens of MB of wasm. `@php-wasm/node` is deliberately avoided — it
+statically imports a NAN native addon that throws at module-evaluation time when its binding fails to load,
+which is also why `nodeFsMountHandler` is implemented here against the Emscripten FS directly.
 
-**`PHP.cli()` consumes its instance.** It calls `exit()` on the runtime when the command finishes, and a
-second `cli()` on the same instance returns exit code **-1 with no output and no error at all** — a silent
-failure. `PhpInterpreter` therefore boots a replacement between commands and replays the journal
-(`src/journal.ts`) onto it, which is why `mount`/`writeFile`/`mkdir`/`ini` record a `JournalOp` rather than
-just acting. The ops are plain data on purpose: the same journal is what `isolation: "process"` ships to its
-child, so the two mechanisms cannot drift. `replay` awaits `php()` _before_ recording, because `#boot`
-replays the journal and recording first would run the new op twice on the very first call.
+**Every build is tested, and installing one is not what you would guess.** `test/versions.test.ts`
+is the only cross-version coverage: it drives the real paths (module calls, marshalling, envelope
+ordering, errors, `cli()`, `ini`, mount, `isolation: "process"`) against each build, and CI runs it as a
+`php-versions` matrix of one build per job. `BUN_PHP_VERSIONS` names the targets; unset, it covers
+whichever builds are installed, so locally that is 8.3 and 8.5. An explicitly named version is never
+filtered out by the "is it installed" check — otherwise a job whose install step failed would pass on
+zero tests, which is exactly what the `build discovery` block guards. The sixth matrix leg is `default`,
+not `8.5`: it passes no `phpVersion` at all, so the `?? PHP_VERSION` fallback is what gets exercised.
+`test/fixtures/e2e.php` is that suite's fixture as well as the e2e one, so it has to stay PHP
+8.0-compatible — the 8.0 job enforces this, but a snippet with a deprecation notice on one build and not
+another will flake rather than fail cleanly.
+
+Installing a build needs `scripts/php-builds-install.ts`, because **both obvious commands silently do
+nothing**: `bun add --no-save` resolves the tree from package.json, where these are only optional peers,
+and a plain `bun add` skips a package that is already declared as one. The script strips the peer
+declaration first, runs a real `bun add`, and restores package.json and bun.lock — which is why the
+version job can install 8.1 without disturbing `test/interpreter.test.ts` and `test/isolation.test.ts`,
+whose three `skipIf(isBuildInstalled("8.1"))` tests still assume 8.1 is absent in every other job.
 
 **Neither timeouts nor parallelism work the way you would assume in-process**, both measured:
 
 - A running request cannot be interrupted. `PHP.exit()` mid-call returns without stopping it (a busy loop then
   ran to completion), and `max_execution_time` is ignored — a 2s limit let an 8s loop finish. So in-process
-  `timeoutMs` bounds _waiting_ only: it rejects and retires the interpreter while the PHP keeps burning CPU.
-  Say so wherever it is documented; a timeout that implies cancellation is worse than none.
+  `timeoutMs` bounds _waiting_ only: it rejects and flags the interpreter `retired` while the PHP keeps burning
+  CPU. Say so wherever it is documented; a timeout that implies cancellation is worse than none.
 - Interpreters do not overlap. Two concurrent 1s calls on two instances take ~2s (ratio 1.96), because the
   wasm holds the thread. That is why there is no pool API — a second interpreter in-process buys nothing, and
   `test/interpreter.test.ts` pins the ratio so nobody adds one on a hunch.
@@ -170,13 +287,22 @@ replays the journal and recording first would run the new op twice on the very f
 **`isolation: "process"` exists because of the previous paragraph**, plus one more measurement: the wasm heap
 retains hundreds of MB across in-process boot/dispose cycles (35 MB baseline → 300–800 MB after a handful,
 forced GC included) and the OS reclaiming an exited child is the only thing that returns it. Each `cli()`
-spawns `src/isolation-runner.ts`, ships `{options, journal, argv}` as JSON, and SIGKILLs on timeout — so
-under isolation `timeoutMs` really cancels, concurrent calls really overlap (1.04x measured), and a wasm
-abort takes only the child. The constructor rejects `loader` and function-valued `spawn` up front because
-they cannot cross the JSON boundary, `php()` throws for the same reason, and `createPhpModule` refuses
-`runtime.isolation` outright — the imported-module path runs many small calls against one live instance,
-the opposite shape. The runner deliberately constructs a plain in-process `PhpInterpreter`: the child _is_
-the isolation, and reusing `#cli` keeps the two paths from diverging.
+spawns `src/isolation-runner.ts`, ships `{ options: { phpVersion, spawn }, journal, argv }` as JSON on stdin,
+and SIGKILLs on timeout — so under isolation `timeoutMs` really cancels, concurrent calls really overlap
+(1.04x measured), and a wasm abort takes only the child. The constructor rejects `loader` and function-valued
+`spawn` up front because they cannot cross the JSON boundary, `php()` throws for the same reason, and
+`createPhpModule` refuses `runtime.isolation` outright — the imported-module path runs many small calls
+against one live instance, the opposite shape. The runner constructs a plain in-process
+`PhpInterpreter(options, journal)`: the child _is_ the isolation, and reusing `cli()` keeps the two paths from
+diverging. Errors cross through `serialiseError`/`reviveError`, which carry the fields of bun-php's own error
+types so `instanceof`, `packageName`/`phpClass` and the cause's message survive the JSON boundary; an
+unknown name stays a plain `Error`.
+
+**Interleaving `mount()`/`writeFile()` with a concurrent `cli()` is not supported.** `#apply` awaits `php()`
+and then applies the op, and in between a `cli()` can consume and exit that very instance. Twenty attempts
+across both orderings produced no spurious rejection — `cli()` nulls `#instance` synchronously, so a
+concurrent op boots its own — so there is no serialiser for a race nobody has reproduced. Do the setup
+before the call.
 
 **Sidecar `.d.ts` files:** `test/fixtures/*.php.d.ts` and `demos/php/*.php.d.ts` are gitignored (regenerated
 on the next run); `example/hello.php.d.ts` is committed on purpose as a worked example. `demos/vendor/` is

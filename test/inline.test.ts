@@ -1,10 +1,27 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { PhpError } from "../src/errors";
-import { BunPHP } from "../src/inline";
+import { asClosureBody, BunPHP } from "../src/inline";
 
 afterAll(async () => {
   await BunPHP.dispose();
 });
+
+/** Run something, returning whatever it wrote to the terminal. */
+async function printed(run: () => Promise<unknown>): Promise<string> {
+  const chunks: string[] = [];
+  const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+    chunks.push(String(chunk));
+    return true;
+  });
+
+  try {
+    await run();
+  } finally {
+    write.mockRestore();
+  }
+
+  return chunks.join("");
+}
 
 describe("result", () => {
   test("printed output comes back as a string", async () => {
@@ -14,6 +31,16 @@ describe("result", () => {
   test("a top-level return wins over output", async () => {
     expect(await BunPHP`<?php return 40 + 2;`).toBe(42);
     expect(await BunPHP.capture`<?php echo "ignored"; return "returned";`).toBe("returned");
+  });
+
+  test("capture falls back to output on null, which PHP cannot tell from no return", async () => {
+    // `return null;` and returning nothing leave the same envelope, so this is the documented rule
+    // rather than a distinction the runtime could make.
+    expect(await BunPHP.capture`<?php echo "out"; return null;`).toBe("out");
+    expect(await BunPHP.capture`<?php echo "out";`).toBe("out");
+    // Everything else still wins, falsy included.
+    expect(await BunPHP.capture`<?php echo "out"; return false;`).toBe(false);
+    expect(await BunPHP.capture`<?php echo "out"; return "";`).toBe("");
   });
 
   test("falsy return values are preserved", async () => {
@@ -40,23 +67,6 @@ describe("result", () => {
 });
 
 describe("output", () => {
-  /** Run something, returning whatever it wrote to the terminal. */
-  async function printed(run: () => Promise<unknown>): Promise<string> {
-    const chunks: string[] = [];
-    const write = spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      chunks.push(String(chunk));
-      return true;
-    });
-
-    try {
-      await run();
-    } finally {
-      write.mockRestore();
-    }
-
-    return chunks.join("");
-  }
-
   test("echo reaches the terminal, as it does from an imported .php file", async () => {
     expect(await printed(() => BunPHP`<?php echo "Hello world";`)).toBe("Hello world");
   });
@@ -145,6 +155,121 @@ describe("open and close tags", () => {
 
   test("interpolation works inside markup", async () => {
     expect(await BunPHP.capture`<b><?= ${"safe"} ?></b>`).toContain("<b>safe</b>");
+  });
+
+  test("a bare `<?` is markup, because short tags are pinned off", async () => {
+    // Parser and runtime agree on this now, so there is nothing left to keep in sync.
+    expect(await BunPHP.capture`<? echo 1;`).toBe("<? echo 1;\n");
+    expect(await BunPHP.capture`<p>x</p><? echo 1;`).toBe("<p>x</p><? echo 1;\n");
+  });
+
+  test("an XML declaration survives as markup", async () => {
+    // The classic short-tag gotcha: with short tags on, PHP itself parse-errors on this.
+    expect(await BunPHP.capture`<?xml version="1.0"?><root/>`).toBe(
+      `<?xml version="1.0"?><root/>\n`,
+    );
+  });
+
+  test("an uppercase open tag runs", async () => {
+    // Stripping only `<?` left `PHP return 1;`, which is a parse error.
+    expect(await BunPHP`<?PHP return 6 * 7;`).toBe(42);
+  });
+
+  test("a closing tag inside a string literal is not a mode switch", async () => {
+    expect(await BunPHP`<?php return "?>";`).toBe("?>");
+    expect(await BunPHP`return '?>';`).toBe("?>");
+  });
+
+  test("an opening tag inside a string literal is not leading markup", async () => {
+    expect(await BunPHP`return "<?";`).toBe("<?");
+    expect(await BunPHP`return "<?php";`).toBe("<?php");
+  });
+
+  test("a snippet that starts as code keeps running as code across a tag", async () => {
+    expect(await BunPHP.capture`echo "a"; ?><?php echo "b";`).toBe("ab");
+  });
+
+  test("a closing tag inside a comment or heredoc is not a mode switch", async () => {
+    expect(await BunPHP`/* ?> */ return 1;`).toBe(1);
+    expect(
+      await BunPHP`return <<<'EOT'
+?>
+EOT;`,
+    ).toBe("?>");
+  });
+});
+
+/** Where the tag rules actually live; testing them here costs no interpreter boot. */
+describe("asClosureBody", () => {
+  test("drops a leading open tag and keeps code mode", () => {
+    expect(asClosureBody(`<?php return 1;`)).toBe(` return 1;`);
+    expect(asClosureBody(`<?= 6 * 7;`)).toBe(`echo  6 * 7;`);
+  });
+
+  test("an open tag is case-insensitive, as PHP's lexer has it", () => {
+    expect(asClosureBody(`<?PHP return 1;`)).toBe(` return 1;`);
+    expect(asClosureBody(`<?Php return 1;`)).toBe(` return 1;`);
+  });
+
+  test("re-enters code mode only when the snippet really ends in markup", () => {
+    expect(asClosureBody(`echo "a"; ?>`)).toBe(`echo "a"; ?>\n<?php `);
+    expect(asClosureBody(`<?php echo "a"; ?><i>b</i><?php echo "c";`)).toBe(
+      ` echo "a"; ?><i>b</i><?php echo "c";`,
+    );
+  });
+
+  test("prefixes `?>` only for markup ahead of a real tag", () => {
+    expect(asClosureBody(`<p>a</p><?php echo "b";`)).toBe(`?><p>a</p><?php echo "b";`);
+    expect(asClosureBody(`return "<?";`)).toBe(`return "<?";`);
+    // Code ran before that tag, so the snippet is code-first however many tags follow.
+    expect(asClosureBody(`echo "a"; ?><?php echo "b";`)).toBe(`echo "a"; ?><?php echo "b";`);
+  });
+
+  test("ignores tags inside string literals", () => {
+    expect(asClosureBody(`return "?>";`)).toBe(`return "?>";`);
+    expect(asClosureBody(`return '?>';`)).toBe(`return '?>';`);
+    // The escaped quote does not end the literal, so the `?>` inside it is still not a tag.
+    expect(asClosureBody(`return "a\\"?>";`)).toBe(`return "a\\"?>";`);
+  });
+
+  test("ignores a closing tag inside a block comment, but not a line comment", () => {
+    expect(asClosureBody(`/* ?> */ return 1;`)).toBe(`/* ?> */ return 1;`);
+    // PHP ends a line comment at `?>` and leaves code mode with it.
+    expect(asClosureBody(`// x ?> tail`)).toBe(`// x ?> tail\n<?php `);
+    // `#[` opens an attribute, not a comment.
+    expect(asClosureBody(`#[Attr] function f() {} return 1;`)).toBe(
+      `#[Attr] function f() {} return 1;`,
+    );
+  });
+
+  test("ignores tags inside a heredoc or nowdoc", () => {
+    expect(asClosureBody(`return <<<'EOT'\n?>\nEOT;`)).toBe(`return <<<'EOT'\n?>\nEOT;`);
+    expect(asClosureBody(`return <<<EOT\n<?php\n  EOT;`)).toBe(`return <<<EOT\n<?php\n  EOT;`);
+  });
+});
+
+describe("raw template segments", () => {
+  test("JavaScript does not eat the snippet's escapes", async () => {
+    // Cooked strings turn `\d` into `d`, silently breaking every regex in an inline snippet.
+    expect(await BunPHP`return preg_match("/\d+/", "abc123");`).toBe(1);
+    expect(await BunPHP`return "\\" . "d";`).toBe("\\d");
+  });
+
+  test("PHP applies its own quoting rules, not JavaScript's", async () => {
+    // Single quotes keep the backslash in PHP; double quotes expand it. Cooked did both the same.
+    expect(await BunPHP`return 'a\tb';`).toBe("a\\tb");
+    expect(await BunPHP`return "a\tb";`).toBe("a\tb");
+  });
+
+  test("a namespace separator survives", async () => {
+    // PHP leaves `\D` alone inside double quotes; JavaScript's cooked strings did not.
+    expect(await BunPHP`return "\DateTimeImmutable";`).toBe("\\DateTimeImmutable");
+    expect(await BunPHP`return get_class(new \DateTimeImmutable());`).toBe("DateTimeImmutable");
+  });
+
+  test("an invalid JavaScript escape does not erase the snippet", async () => {
+    // A cooked segment is `undefined` here, and `?? ""` used to drop the whole snippet, returning null.
+    expect(await BunPHP`return "C:\uwhoops";`).toBe("C:\\uwhoops");
   });
 });
 
@@ -245,6 +370,19 @@ describe("concurrency", () => {
       BunPHP`<?php usleep(1000); return 3;`,
     ]);
     expect(results).toEqual([1, 2, 3]);
+  });
+
+  test("overlapping printing snippets print in call order", async () => {
+    // bun-php does not queue snippets itself; php-wasm runs one request at a time,
+    // in the order they were started, and that is what keeps the terminal in order.
+    const out = await printed(() =>
+      Promise.all([
+        BunPHP`<?php usleep(20000); echo "first";`,
+        BunPHP`<?php echo "second";`,
+        BunPHP`<?php usleep(10000); echo "third";`,
+      ]),
+    );
+    expect(out).toBe("firstsecondthird");
   });
 });
 

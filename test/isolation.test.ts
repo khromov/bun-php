@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PhpTimeoutError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
+import { PhpError } from "../src/errors";
+import { killedByDeadline, readReply, reviveError, serialiseError } from "../src/isolation";
+import { PhpBuildNotInstalledError } from "../src/php-runtime";
+import { isBuildInstalled } from "./php-builds";
 
 const BOOT_MS = 30_000;
 
@@ -46,6 +50,29 @@ describe("isolation: 'process'", () => {
           'echo file_get_contents("/data/data.txt"), "|", file_get_contents("/s/f.txt"), "|", ini_get("memory_limit");',
         ]);
         expect(result.stdout).toBe("from the host|staged|512M");
+      });
+    },
+    BOOT_MS,
+  );
+
+  test(
+    "mounts and ini given as options reach the child exactly once",
+    async () => {
+      await withTempDir(async (dir) => {
+        await writeFile(join(dir, "a.txt"), "mounted");
+        const php = createInterpreter({
+          isolation: "process",
+          ini: { memory_limit: "512M" },
+          mounts: [{ host: dir, at: "/m" }],
+        });
+        // Mounting a point twice throws, so options travelling both as options and in
+        // the journal would make the child fail rather than pass.
+        const result = await php.cli([
+          "php",
+          "-r",
+          'echo ini_get("memory_limit"), "|", file_get_contents("/m/a.txt");',
+        ]);
+        expect(result.stdout).toBe("512M|mounted");
       });
     },
     BOOT_MS,
@@ -151,6 +178,90 @@ describe("isolation: 'process'", () => {
 
   test("php() has no instance to hand back", async () => {
     const php = createInterpreter({ isolation: "process" });
-    expect(php.php()).rejects.toThrow("isolation");
+    await expect(php.php()).rejects.toThrow("isolation");
+  });
+});
+
+describe("errors crossing the boundary", () => {
+  // Skipped where 8.1 is installed; see the twin in test/interpreter.test.ts.
+  test.skipIf(isBuildInstalled("8.1"))("keep their class and fields", async () => {
+    // A plain Error loses instanceof, packageName and the cause that explains what really failed.
+    const php = createInterpreter({ phpVersion: "8.1", isolation: "process" });
+    const error = await php.cli(["php", "-v"]).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PhpBuildNotInstalledError);
+    expect((error as PhpBuildNotInstalledError).packageName).toBe("@php-wasm/node-8-1");
+    expect((error as PhpBuildNotInstalledError).phpVersion).toBe("8.1");
+    expect((error as Error).cause).toBeDefined();
+    expect((error as Error).message).toStartWith("PHP 8.1 needs @php-wasm/node-8-1");
+  });
+
+  test("round-trip through the wire shape", () => {
+    const original = new PhpError("boom", "RuntimeException", "/app.php", 12, "#0 {main}");
+    const revived = reviveError(serialiseError(original)) as PhpError;
+
+    expect(revived).toBeInstanceOf(PhpError);
+    expect(revived.phpClass).toBe("RuntimeException");
+    expect(revived.phpLine).toBe(12);
+    expect(revived.phpTrace).toBe("#0 {main}");
+    expect(JSON.parse(JSON.stringify(serialiseError(original))).name).toBe("PhpError");
+  });
+
+  test("an unknown error type stays a plain Error", () => {
+    const revived = reviveError(serialiseError(new RangeError("out of range")));
+    expect(revived).toBeInstanceOf(Error);
+    expect(revived.message).toBe("RangeError: out of range");
+  });
+
+  test("a non-Error rejection still crosses", () => {
+    expect(reviveError(serialiseError("just a string")).message).toBe("Error: just a string");
+  });
+});
+
+describe("the deadline and a child that finished on its own", () => {
+  test("only a signalled child counts as a timeout", () => {
+    // The timer can fire as the child is already exiting: the kill lands on a corpse while a
+    // complete reply is sitting in stdout, and treating that as a timeout throws away a real result.
+    expect(killedByDeadline(true, "SIGKILL")).toBe(true);
+    expect(killedByDeadline(true, null)).toBe(false);
+  });
+
+  test("a child that outlived nothing is never a timeout", () => {
+    expect(killedByDeadline(false, null)).toBe(false);
+    // A child killed by something else while no deadline was set is not the deadline's doing.
+    expect(killedByDeadline(false, "SIGSEGV")).toBe(false);
+  });
+});
+
+describe("reading the child's reply", () => {
+  const good = JSON.stringify({ ok: true, result: { stdout: "x", stderr: "", exitCode: 0 } });
+
+  test("a normal reply comes back", () => {
+    expect(readReply(good, "", 0)).toEqual({ stdout: "x", stderr: "", exitCode: 0 });
+  });
+
+  test("a crash surfaces the child's stderr", () => {
+    expect(() => readReply("", "wasm aborted", 1)).toThrow("wasm aborted");
+  });
+
+  test("exiting 0 without a reply names bun-php and quotes the stray output", () => {
+    // A bare `SyntaxError: Unexpected identifier` says nothing about which process wrote what.
+    const error = (() => {
+      try {
+        readReply("stray line from some dependency\n", "and some stderr", 0);
+      } catch (err) {
+        return err as Error;
+      }
+      throw new Error("should have thrown");
+    })();
+
+    expect(error).not.toBeInstanceOf(SyntaxError);
+    expect(error.message).toContain("isolation runner exited 0 without a usable reply");
+    expect(error.message).toContain("stray line from some dependency");
+    expect(error.message).toContain("and some stderr");
+  });
+
+  test("empty stdout is reported the same way", () => {
+    expect(() => readReply("", "", 0)).toThrow(/exited 0 without a usable reply/);
   });
 });

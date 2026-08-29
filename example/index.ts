@@ -10,4 +10,11 @@ console.log("money:", await money(1234567.891));
 
 console.log("PHP version:", await phpModule.$eval("return PHP_VERSION;"));
 
+// A sink takes this call's output away from the module's stdout mode.
+let streamed = "";
+await phpModule.$eval(`echo "streamed from PHP";`, (text) => {
+  streamed += text;
+});
+console.log("sink:", streamed);
+
 await phpModule.$dispose();

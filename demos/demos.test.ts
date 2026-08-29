@@ -105,7 +105,7 @@ describe("firebase/php-jwt", () => {
 
   test("rejects a token signed with a different key", async () => {
     const token = await signToken({ sub: "user-42" }, secret);
-    expect(verifyToken(token, "a-completely-different-key-0123456789")).rejects.toThrow(
+    await expect(verifyToken(token, "a-completely-different-key-0123456789")).rejects.toThrow(
       /SignatureInvalid/,
     );
   });
@@ -188,7 +188,7 @@ describe("ext-gd", () => {
   });
 
   test("rejects a file that is not an image", async () => {
-    expect(imageInfo(join(import.meta.dir, "composer.json"))).rejects.toThrow(
+    await expect(imageInfo(join(import.meta.dir, "composer.json"))).rejects.toThrow(
       /Not a readable image/,
     );
   });

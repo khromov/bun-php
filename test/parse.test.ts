@@ -116,6 +116,75 @@ describe("parameter types", () => {
   });
 });
 
+describe("array keys past 2^53", () => {
+  const value = (php: string) => parse(php).constants[0]?.value;
+
+  test("an integer key JavaScript cannot hold exactly is not a literal", () => {
+    // PHP int-ifies the string and counts on from it; a rounded key silently reshapes the constant.
+    expect(value(`const A = ["9007199254740993" => "a", "b"];`)).toBeUndefined();
+    expect(value(`const B = [9007199254740993 => "a", "b"];`)).toBeUndefined();
+    expect(parse(`const C = ["9007199254740993" => "a"];`).skipped).toHaveLength(1);
+  });
+
+  test("keys it can hold are still int-ified the way PHP does", () => {
+    expect(value(`const A = ["1" => "a", "b"];`)).toEqual({ "1": "a", "2": "b" });
+    expect(value(`const B = ["0" => "a", "b"];`)).toEqual(["a", "b"]);
+    expect(value(`const C = ["9007199254740991" => "a"];`)).toEqual({ "9007199254740991": "a" });
+  });
+
+  test("a non-numeric key is untouched", () => {
+    expect(value(`const A = ["01" => "a", "x" => "b"];`)).toEqual({ "01": "a", x: "b" });
+  });
+
+  test("only a derived key can be underivable", () => {
+    // The implicit candidate was computed for every entry, so an explicit key after the highest
+    // safe integer tripped the 2^53 guard even though nothing needed deriving.
+    expect(value(`const A = [9007199254740991 => "a", "x" => "b"];`)).toEqual({
+      "9007199254740991": "a",
+      x: "b",
+    });
+    // An entry that really does need the next key is still refused.
+    expect(value(`const B = [9007199254740991 => "a", "b"];`)).toBeUndefined();
+  });
+
+  test("an implicit key after a negative one is version-dependent, so not a literal", () => {
+    // PHP 8.3 resumes at -4; 8.0-8.2 restart at 0, and constants are evaluated without knowing which.
+    expect(value(`const A = [-5 => "a", "b"];`)).toBeUndefined();
+    expect(parse(`const B = [-5 => "a", "b"];`).skipped).toHaveLength(1);
+    // An explicit key, or a negative one on its own, says exactly what it means.
+    expect(value(`const C = [-5 => "a"];`)).toEqual({ "-5": "a" });
+    expect(value(`const D = [-5 => "a", -4 => "b"];`)).toEqual({ "-5": "a", "-4": "b" });
+  });
+});
+
+describe("fully-qualified define()", () => {
+  test("a leading separator names the same function", () => {
+    // Namespaced code writes `\define(...)` to skip the runtime fallback lookup.
+    expect(parse(`\\define('FQ', 1);`).constants).toEqual([{ name: "FQ", value: 1 }]);
+    expect(parse(`\\DEFINE('UPPER', 2);`).constants).toEqual([{ name: "UPPER", value: 2 }]);
+    expect(parse(`define('PLAIN', 3);`).constants).toEqual([{ name: "PLAIN", value: 3 }]);
+  });
+
+  test("a qualified name is a different function and is left alone", () => {
+    expect(parse(`A\\define('NS', 1);`).constants).toEqual([]);
+    expect(parse(`A\\define('NS', 1);`).skipped).toEqual([]);
+  });
+});
+
+describe("short open tags", () => {
+  test("a file opening with `<?` declares nothing, as the runtime agrees", () => {
+    // bun-php pins short_open_tag off, so `<?` is markup to the parser and to PHP alike. It used
+    // to be markup here and code there, which made the module silently empty.
+    const meta = parsePhp(`<? function shortTag(): int { return 1; }`, "/virtual/short.php");
+    expect(meta.functions).toEqual([]);
+  });
+
+  test("`<?=` and `<?php` are unaffected", () => {
+    expect(parsePhp(`<?php function a(): int {}`, "/v/a.php").functions).toHaveLength(1);
+    expect(parsePhp(`<?= 1 ?><?php function b(): int {}`, "/v/b.php").functions).toHaveLength(1);
+  });
+});
+
 describe("docblocks", () => {
   test("extracts the summary and drops tags from it", () => {
     const f = fn(`
@@ -186,6 +255,30 @@ describe("docblocks", () => {
 
   test("a parenthesised union with an array suffix survives", () => {
     expect(fn(`/** @param (int|string)[] $x */ function f(array $x) {}`).params[0]!.tsType).toBe(
+      "(number | string)[]",
+    );
+  });
+});
+
+describe("docblock unions", () => {
+  test("an alias that expands to several members is deduped by member", () => {
+    // `scalar` is three types; deduping whole parts left `string | number | boolean | string`.
+    expect(fn(`/** @param scalar|string $a */ function f($a) {}`).params[0]!.tsType).toBe(
+      "string | number | boolean",
+    );
+    expect(fn(`/** @param int|scalar $a */ function f($a) {}`).params[0]!.tsType).toBe(
+      "number | string | boolean",
+    );
+  });
+
+  test("a union of distinct types is untouched", () => {
+    expect(fn(`/** @param int|string $a */ function f($a) {}`).params[0]!.tsType).toBe(
+      "number | string",
+    );
+  });
+
+  test("a suffixed or parenthesised member is one type, not an alternation", () => {
+    expect(fn(`/** @param (int|string)[] $a */ function f($a) {}`).params[0]!.tsType).toBe(
       "(number | string)[]",
     );
   });
@@ -347,5 +440,55 @@ describe("errors", () => {
       expect((error as PhpParseError).file).toBe("/virtual/bad.php");
       expect((error as PhpParseError).line).toBe(1);
     }
+  });
+});
+
+describe("docblock types for variadics", () => {
+  test("a variadic is typed the same however the docblock spells it", () => {
+    // PSR-5 describes one element, the array form describes the collected array; both mean string[].
+    const psr5 = fn(`/** @param string ...$args */ function f(...$args) {}`, "f");
+    const arrayForm = fn(`/** @param string[] $args */ function f(...$args) {}`, "f");
+    const declared = fn(`function f(string ...$args) {}`, "f");
+
+    expect(psr5.params[0]!.tsType).toBe("string");
+    expect(arrayForm.params[0]!.tsType).toBe("string");
+    expect(declared.params[0]!.tsType).toBe("string");
+  });
+
+  test("a non-variadic keeps the docblock type exactly", () => {
+    // Only a variadic gives up a level; `@param string[] $rows` on a plain parameter is an array.
+    expect(fn(`/** @param string[] $rows */ function f($rows) {}`, "f").params[0]!.tsType).toBe(
+      "string[]",
+    );
+  });
+
+  test("a tag with no body is still a tag", () => {
+    // `@internal` matched nothing, so it leaked into the summary and failed to close it.
+    const meta = fn(
+      `/**
+        * Real summary.
+        *
+        * @internal
+        * this line belongs to @internal
+        */
+       function f(): int {}`,
+      "f",
+    );
+    expect(meta.doc).toBe("Real summary.");
+  });
+
+  test("the summary stops at the first tag, whichever tag it is", () => {
+    const meta = fn(
+      `/**
+        * Real summary.
+        *
+        * @throws RuntimeException when the widget explodes
+        *   and this line continues @throws, not the summary
+        * @param int $n
+        */
+       function f(int $n): int {}`,
+      "f",
+    );
+    expect(meta.doc).toBe("Real summary.");
   });
 });

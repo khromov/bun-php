@@ -167,6 +167,48 @@ describe("generated .d.ts", () => {
     expect(dts).not.toContain("import");
     expect(dts).toContain("type PhpArray =");
   });
+
+  test("a skipped note containing a line terminator stays inside its comment", () => {
+    // `define()` takes any name; a newline in one ended the `//` comment and left the rest of the
+    // note as bare tokens, so the module no longer parsed.
+    const { js, dts } = build(`define("a\nb", 'x' . 'y');`);
+
+    for (const generated of [js, dts]) {
+      const trailer = generated.slice(generated.indexOf("// Not exported:"));
+      expect(trailer.split("\n").filter(Boolean)).toHaveLength(2);
+      expect(trailer).toContain("define('a b')");
+    }
+    expect(() => new Bun.Transpiler({ loader: "js" }).transformSync(js)).not.toThrow();
+  });
+
+  test("a PHP function named call stays a named export only", () => {
+    // The API's own `call(name, args)` holds that key; a second one is TS2717, and at runtime the
+    // API wins anyway, so the default export must not claim to carry the PHP function.
+    const { dts, js } = build(`function call(string $a): string {}`);
+    expect(dts).toContain("export declare function call(a: string): Promise<string>;");
+    expect(dts).not.toContain("call: typeof call;");
+    expect(dts).toContain(
+      "// Named export only (the module API owns `call` on the default export):",
+    );
+    expect(js).toContain("export const call = (...args) =>");
+  });
+
+  test("types the default export the way PhpModuleApi does", () => {
+    // A .php import resolves to the sidecar, so anything missing here is untypeable for the caller.
+    const { dts } = build(`function f(): void {}`);
+    expect(dts).toContain("$eval(code: string, onOutput?: (text: string) => void): Promise<any>;");
+    // $reset is lazy: it discards state and lets the *next* call pay for the boot.
+    expect(dts).toContain("/** Discard all PHP state; the next call boots a fresh interpreter. */");
+  });
+
+  test("the committed example sidecar is current", async () => {
+    // example/hello.php.d.ts is checked in as a worked example, so a dts change must regenerate it.
+    const path = "example/hello.php";
+    const source = await Bun.file(path).text();
+    expect(generateDts(parsePhp(source, path), "hello.php")).toBe(
+      await Bun.file(`${path}.d.ts`).text(),
+    );
+  });
 });
 
 /**

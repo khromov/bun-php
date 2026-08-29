@@ -1,39 +1,29 @@
 /**
- * Maps PHP type declarations (and docblock type strings) onto TypeScript types.
- *
- * php-parser represents a type slot as one of:
- *   - `typereference` — a builtin keyword (`int`, `string`, `array`, `void`, ...)
- *   - `name`          — a class/interface reference, with a `resolution` field
- *   - `uniontype` / `intersectiontype` — with the members in `.types`
- * ...or `null` when the declaration has no type hint at all.
- *
- * Nullability has two spellings that produce structurally different ASTs:
- * `?T` sets the sibling boolean `nullable: true` and leaves `type` as bare `T`,
- * while `T|null` is a `uniontype` holding a `null` typereference. Both are
- * normalised to `T | null` here.
+ * php-parser type slots are `typereference` (a builtin keyword), `name` (a class), `uniontype` /
+ * `intersectiontype` (members in `.types`), or null. `?T` arrives as `nullable: true` beside a bare
+ * `T`, while `T|null` arrives as a union; both end up as `T | null`.
  */
-
 export type TypeNode =
-  | {
-      kind?: string;
-      name?: string | null;
-      types?: TypeNode[];
-      [key: string]: unknown;
-    }
+  | { kind?: string; name?: string | null; types?: TypeNode[]; [key: string]: unknown }
   | null
   | undefined;
 
-const BUILTIN_TS: Record<string, string> = {
+// PHP's declared keywords plus the docblock-only spellings (`integer`, `double`, `boolean`, `scalar`).
+const TS_TYPES: Record<string, string> = {
   int: "number",
+  integer: "number",
   float: "number",
+  double: "number",
   string: "string",
   bool: "boolean",
+  boolean: "boolean",
   true: "true",
   false: "false",
   void: "void",
   null: "null",
   never: "never",
   mixed: "any",
+  scalar: "string | number | boolean",
   array: "PhpArray",
   object: "Record<string, unknown>",
   callable: "unknown",
@@ -42,141 +32,98 @@ const BUILTIN_TS: Record<string, string> = {
   self: "Record<string, unknown>",
 };
 
-/** Deduplicate while preserving order, then join as a union. */
+/**
+ * Dedupe and join as a union; `any` swallows every other member. Parts are split on `|` first,
+ * because one PHP alias can expand to several members — `scalar|string` is three, not four.
+ */
 function union(parts: string[]): string {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const p of parts) {
-    if (!seen.has(p)) {
-      seen.add(p);
-      out.push(p);
-    }
-  }
-  if (out.length === 0) return "any";
-  // `any` swallows every other member.
-  if (out.includes("any")) return "any";
-  return out.join(" | ");
+  const atoms = parts.flatMap((part) =>
+    // Only a bare alternation splits: a parenthesised or suffixed part is one type, not several.
+    /^[^()[\]]+$/.test(part) ? part.split("|").map((atom) => atom.trim()) : [part],
+  );
+  const unique = [...new Set(atoms.filter(Boolean))];
+  if (unique.length === 0 || unique.includes("any")) return "any";
+  return unique.join(" | ");
 }
 
-/** Convert a php-parser type node into a TypeScript type expression. */
-export function phpTypeToTs(node: TypeNode, nullable = false): string {
-  const base = convert(node);
-  if (!nullable) return base;
-  if (base === "any" || base === "void" || base.split(" | ").includes("null")) {
-    return base;
-  }
-  return union([base, "null"]);
-}
-
-function convert(node: TypeNode): string {
+/** Convert a php-parser type node into a TypeScript type. */
+export function phpTypeToTs(node: TypeNode): string {
   if (!node) return "any";
-
   switch (node.kind) {
     case "uniontype":
-      return union((node.types ?? []).map((t) => convert(t)));
-
-    // An intersection is always of class types, which we cannot model.
+      return union((node.types ?? []).map(phpTypeToTs));
+    // Always class types, which cannot be modelled.
     case "intersectiontype":
       return "unknown";
-
-    case "typereference": {
-      const name = (node.name ?? "").toLowerCase();
-      return BUILTIN_TS[name] ?? "any";
-    }
-
+    case "typereference":
+      return TS_TYPES[(node.name ?? "").toLowerCase()] ?? "any";
+    // `json_encode` turns an object into its public properties.
     case "name":
-      // A class reference. `json_encode` turns objects into their public
-      // properties, so an object shape is the honest mapping.
       return "Record<string, unknown>";
-
     default:
       return "any";
   }
 }
 
-/**
- * Convert a docblock type string (`int|null`, `?string`, `int[]`, `array<int>`)
- * into a TypeScript type. Used only where a real type declaration is absent.
- */
+/** `T | null`, unless `T` already covers it. */
+export function nullable(type: string): string {
+  const covered = type === "any" || type === "void" || type.split(" | ").includes("null");
+  return covered ? type : `${type} | null`;
+}
+
+/** Unions must be wrapped before `[]` binds. */
+export function parenthesised(type: string): string {
+  return type.includes(" | ") ? `(${type})` : type;
+}
+
+/** A docblock type (`int|null`, `?string`, `int[]`, `array<string, int>`) as a TypeScript type. */
 export function docTypeToTs(raw: string): string {
-  const text = raw.trim();
-  if (!text) return "any";
-
-  // Split on top-level `|` only — `array<int|string>` is one part, not two.
-  const parts = splitTopLevel(text, "|").filter(Boolean);
-  if (parts.length === 0) return "any";
-
-  return union(parts.map(convertDocPart));
+  // Split on top-level `|` only: `array<int|string>` is one part.
+  return union(splitTopLevel(raw.trim(), "|").filter(Boolean).map(convertDocPart));
 }
 
 function convertDocPart(part: string): string {
   let text = part.trim();
 
-  // `?T` is shorthand for `T|null`.
-  if (text.startsWith("?")) {
-    return union([convertDocPart(text.slice(1)), "null"]);
-  }
+  if (text.startsWith("?")) return union([convertDocPart(text.slice(1)), "null"]);
 
-  // `T[]` — possibly repeated, e.g. `int[][]`.
-  let suffixDepth = 0;
+  let arrayDepth = 0;
   while (text.endsWith("[]")) {
     text = text.slice(0, -2);
-    suffixDepth++;
+    arrayDepth++;
   }
-  if (suffixDepth > 0) {
-    const inner = convertDocPart(text);
-    // Unions must be parenthesised before `[]` binds.
-    const safe = inner.includes(" | ") ? `(${inner})` : inner;
-    return safe + "[]".repeat(suffixDepth);
-  }
+  if (arrayDepth > 0) return parenthesised(convertDocPart(text)) + "[]".repeat(arrayDepth);
 
-  // A parenthesised group, e.g. the element of `(int|string)[]`.
-  if (text.startsWith("(") && text.endsWith(")")) {
-    return docTypeToTs(text.slice(1, -1));
-  }
+  if (text.startsWith("(") && text.endsWith(")")) return docTypeToTs(text.slice(1, -1));
 
-  // `array<int>` / `array<string, int>` / `array<int, T>` / `list<int>`.
   const generic = /^(array|list|iterable)\s*<(.+)>$/i.exec(text);
   if (generic) {
     const args = splitTopLevel(generic[2] ?? "", ",").filter(Boolean);
     const value = args.length > 1 ? args[1] : args[0];
-    // Recurse through docTypeToTs so a union value type survives intact.
     const inner = value ? docTypeToTs(value) : "PhpValue";
-    // Integer keys describe a list, so `array<int, T>` is `T[]` rather than a
-    // string-keyed record.
-    const keyed = args.length > 1 && !/^(int|integer)$/i.test((args[0] ?? "").trim());
-    if (!keyed) {
-      const safe = inner.includes(" | ") ? `(${inner})` : inner;
-      return `${safe}[]`;
-    }
-    return `Record<string, ${inner}>`;
+    // Integer keys describe a list; anything else is a string-keyed record.
+    const keyed = args.length > 1 && !/^(int|integer)$/i.test(args[0] ?? "");
+    return keyed ? `Record<string, ${inner}>` : `${parenthesised(inner)}[]`;
   }
 
-  const lower = text.toLowerCase();
-  if (lower in BUILTIN_TS) return BUILTIN_TS[lower] as string;
-  if (lower === "integer") return "number";
-  if (lower === "double") return "number";
-  if (lower === "boolean") return "boolean";
-  if (lower === "scalar") return "string | number | boolean";
-
-  // Anything else is a class name.
-  return "Record<string, unknown>";
+  // Anything unknown is a class name.
+  return TS_TYPES[text.toLowerCase()] ?? "Record<string, unknown>";
 }
 
-/** Split on a separator at depth 0 only, honouring `<>`, `()` and `{}`. */
+/** Split on `separator` at depth 0 only, honouring `<>`, `()` and `{}`. */
 function splitTopLevel(text: string, separator: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let current = "";
   for (const ch of text) {
-    if (ch === "<" || ch === "(" || ch === "{") depth++;
-    else if (ch === ">" || ch === ")" || ch === "}") depth = Math.max(0, depth - 1);
+    if ("<({".includes(ch)) depth++;
+    else if (">)}".includes(ch)) depth = Math.max(0, depth - 1);
     if (ch === separator && depth === 0) {
       out.push(current.trim());
       current = "";
-      continue;
+    } else {
+      current += ch;
     }
-    current += ch;
   }
   out.push(current.trim());
   return out;

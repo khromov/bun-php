@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { decodeOutput, encodeArgs, encodeValue, EnvelopeSplitter, SENTINEL } from "../src/marshal";
+import { encodeArgs, encodeValue, EnvelopeSplitter, SENTINEL } from "../src/marshal";
+
+/** Split a complete stdout string the way the runtime splits a stream. */
+function decodeOutput(stdout: string) {
+  let out = "";
+  const splitter = new EnvelopeSplitter((text) => {
+    out += text;
+  });
+  splitter.push(stdout);
+  const envelope = splitter.end();
+  return { out, envelope };
+}
 
 describe("encodeArgs", () => {
   test("drops trailing undefined so PHP defaults apply", () => {
@@ -9,6 +20,14 @@ describe("encodeArgs", () => {
 
   test("rejects an undefined hole with the function name and position", () => {
     expect(() => encodeArgs([undefined, 1], "f")).toThrow(/f: argument #1 is undefined/);
+  });
+
+  test("reports a sparse hole the way a literal undefined is reported", () => {
+    // Built rather than written as `[, 1]`, which the linter rejects; `.map` skips the hole, which
+    // used to emit the invalid `f(, 1)` instead of naming the argument.
+    const sparse: unknown[] = [];
+    sparse[1] = 1;
+    expect(() => encodeArgs(sparse, "f")).toThrow("f: argument #1 is undefined; pass null instead");
   });
 
   test("encodes BigInt as a PHP int literal", () => {
@@ -24,6 +43,53 @@ describe("encodeArgs", () => {
 });
 
 describe("encodeValue", () => {
+  test("refuses a non-finite number nested inside a value", () => {
+    // Top level becomes NAN/INF, but phpVar's JSON path would silently make a nested one null.
+    expect(() => encodeValue([1, NaN], "f: argument #1")).toThrow(
+      /holds a non-finite number at \[1\]/,
+    );
+    expect(() => encodeValue({ a: { b: Infinity } }, "f: argument #1")).toThrow(
+      /holds a non-finite number at \.a\.b/,
+    );
+  });
+
+  test("reports a cycle instead of blowing the stack", () => {
+    // The non-finite scan recurses; without cycle protection it died before phpVar could explain.
+    const list: unknown[] = [];
+    list.push(list);
+    const object: Record<string, unknown> = {};
+    object.self = object;
+
+    for (const value of [list, object]) {
+      const error = (() => {
+        try {
+          encodeValue(value, "f: argument #1");
+        } catch (err) {
+          return err as Error;
+        }
+        throw new Error("should have thrown");
+      })();
+
+      expect(error).not.toBeInstanceOf(RangeError);
+      expect(error.message).toContain("f: argument #1 could not be encoded");
+      expect(error.message).toContain("cyclic");
+    }
+  });
+
+  test("a throwing getter is reported the same way phpVar's failures are", () => {
+    // The non-finite scan reads properties too, so it must not escape with a raw error where the
+    // encoder right after it would have been wrapped.
+    const value = {
+      get boom(): number {
+        throw new Error("getter exploded");
+      },
+    };
+
+    expect(() => encodeValue(value, "f: argument #1")).toThrow(
+      "f: argument #1 could not be encoded: getter exploded",
+    );
+  });
+
   test("names the value in error messages", () => {
     expect(() => encodeValue(undefined, "BunPHP: interpolation #2")).toThrow(
       /BunPHP: interpolation #2 is undefined/,
@@ -125,6 +191,15 @@ describe("EnvelopeSplitter", () => {
     const { out, envelope } = split([raw]);
     expect(envelope).toBeNull();
     expect(out).toBe(raw);
+  });
+
+  test("a stray sentinel in the output does not hide the envelope after it", () => {
+    // The failed pair's closing sentinel is put back as an opener, so the pairing cannot shift by
+    // one and leave the real envelope's JSON classified as output.
+    const json = '{"ok":true,"v":42}';
+    const { out, envelope } = split([`before${SENTINEL}after${SENTINEL}${json}${SENTINEL}`]);
+    expect(envelope).toEqual({ ok: true, v: 42 });
+    expect(out).toBe(`before${SENTINEL}after`);
   });
 
   test("the last envelope wins, and the earlier one becomes output", () => {

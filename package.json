@@ -9,14 +9,14 @@
     "php-wasm",
     "wasm"
   ],
+  "homepage": "https://github.com/khromov/bun-php#readme",
+  "bugs": {
+    "url": "https://github.com/khromov/bun-php/issues"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/khromov/bun-php.git"
-  },
-  "homepage": "https://github.com/khromov/bun-php#readme",
-  "bugs": {
-    "url": "https://github.com/khromov/bun-php/issues"
   },
   "files": [
     "src",
@@ -33,6 +33,8 @@
   },
   "scripts": {
     "test": "bun test",
+    "test:versions": "bun test test/versions.test.ts",
+    "php-builds:install": "bun scripts/php-builds-install.ts",
     "example": "bun run example/index.ts",
     "typecheck": "bunx --package typescript@5.9.2 tsc -p tsconfig.json",
     "lint": "oxlint",
