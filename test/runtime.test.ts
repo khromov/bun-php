@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { PhpTimeoutError } from "../src/errors";
 import { createPhpModule } from "../src/runtime";
 import type { PhpModuleMeta, StdoutMode } from "../src/types";
 
@@ -48,9 +47,9 @@ describe("instance cache", () => {
     const build = (runtime: Record<string, unknown>) =>
       createPhpModule({ id, source: "<?php\n", functions: {}, meta, stdout: "ignore", runtime });
 
-    build({ phpVersion: "8.5", timeoutMs: 1000, ini: { memory_limit: "64M", precision: 14 } });
+    build({ phpVersion: "8.5", ini: { memory_limit: "64M", precision: 14 } });
     const first = cache().get(id);
-    build({ ini: { precision: 14, memory_limit: "64M" }, timeoutMs: 1000, phpVersion: "8.5" });
+    build({ ini: { precision: 14, memory_limit: "64M" }, phpVersion: "8.5" });
 
     expect(cache().get(id)).toBe(first);
     cache().delete(id);
@@ -121,63 +120,6 @@ describe("streaming output", () => {
   });
 });
 
-describe("runtime.timeoutMs", () => {
-  test("does not count the wasm boot against the first call", async () => {
-    // Booting costs 100-800ms cold, which no caller can influence; charging it to the deadline made
-    // the first call reject and the retry succeed. The loader is slowed so the boot alone outlasts
-    // the budget however warm the wasm cache is, while leaving the call itself room on a slow runner.
-    const module = createPhpModule({
-      id: "/virtual/timeout-cold.php",
-      source: "<?php\n",
-      functions: {},
-      meta,
-      stdout: "ignore",
-      runtime: {
-        timeoutMs: 400,
-        loader: async () => {
-          await Bun.sleep(1000);
-          return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
-        },
-      },
-    });
-
-    expect(await module.$eval("return 1;")).toBe(1);
-    await module.$dispose();
-  }, 30_000);
-
-  test("bounds the wait on a module call", async () => {
-    // The plugin accepts and documents it, but nothing outside cli() used to consume it.
-    const module = createPhpModule({
-      id: "/virtual/timeout.php",
-      source: "<?php\n",
-      functions: {},
-      meta,
-      stdout: "ignore",
-      runtime: { timeoutMs: 100 },
-    });
-    await module.$ready();
-
-    const error = await module.$eval("usleep(700000); return 1;").catch((err: unknown) => err);
-    expect(error).toBeInstanceOf(PhpTimeoutError);
-    expect((error as PhpTimeoutError).timeoutMs).toBe(100);
-
-    await module.$dispose();
-  }, 30_000);
-
-  test("a call inside the deadline is untouched", async () => {
-    const module = createPhpModule({
-      id: "/virtual/timeout-ok.php",
-      source: "<?php\n",
-      functions: {},
-      meta,
-      stdout: "ignore",
-      runtime: { timeoutMs: 30_000 },
-    });
-    expect(await module.$eval("return 7;")).toBe(7);
-    await module.$dispose();
-  }, 30_000);
-});
-
 describe("output chronology", () => {
   test("buffers left open arrive before output written after the envelope", async () => {
     // The envelope carries what was still buffered when it was emitted, so it was written first.
@@ -228,31 +170,6 @@ describe("$reset", () => {
 
     expect(await module.$eval("return 1;")).toBe(1);
     expect(counter.boots).toBe(2);
-
-    await module.$dispose();
-  }, 30_000);
-
-  test("waits for a call the deadline already rejected", async () => {
-    // The timeout rejects the caller, but the PHP runs on. Dropping it from `#running` there let a
-    // reset exit the runtime out from under a live request, defeating the drain's whole purpose.
-    const module = createPhpModule({
-      id: "/virtual/reset-timeout.php",
-      source: "<?php\n",
-      functions: {},
-      meta,
-      stdout: "ignore",
-      runtime: { timeoutMs: 200 },
-    });
-    await module.$ready();
-
-    await expect(module.$eval("usleep(1200000); return 1;")).rejects.toBeInstanceOf(
-      PhpTimeoutError,
-    );
-
-    const started = performance.now();
-    await module.$reset();
-    // The abandoned request had ~1s left to run; a reset that returned at once ignored it.
-    expect(performance.now() - started).toBeGreaterThan(500);
 
     await module.$dispose();
   }, 30_000);

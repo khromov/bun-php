@@ -4,8 +4,6 @@ const GREETING = 'Hello';
 
 /**
  * Greets someone by name.
- *
- * @param string $name Who to greet
  */
 function greet(string $name, string $greeting = GREETING): string
 {
@@ -22,9 +20,6 @@ function addAll(int ...$numbers): int
 
 /**
  * Summarises a list of numbers.
- *
- * @param float[] $values
- * @return array<string, float>
  */
 function stats(array $values): array
 {

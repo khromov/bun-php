@@ -1,7 +1,7 @@
 import { Engine } from "php-parser";
 import { bindingNameFor } from "./codegen";
 import { PhpParseError } from "./errors";
-import { docTypeToTs, nullable, phpTypeToTs, type TypeNode } from "./php-types";
+import { nullable, phpTypeToTs, type TypeNode } from "./php-types";
 import type { PhpFunctionMeta, PhpModuleMeta, PhpParamMeta, PhpValue } from "./types";
 
 type Node = Record<string, any>;
@@ -110,60 +110,33 @@ function walk(
 
 function readFunction(node: Node, namespace: string): PhpFunctionMeta {
   const name = identifierName(node.name) ?? "anonymous";
-  const doc = readDocblock(node);
 
-  const params: PhpParamMeta[] = (node.arguments ?? []).map((param: Node) => {
-    const paramName = identifierName(param.name) ?? "arg";
-    return {
-      name: paramName,
-      tsType: chooseType(
-        param.type,
-        Boolean(param.nullable),
-        elementType(doc?.params.get(paramName), Boolean(param.variadic)),
-      ),
-      optional: param.value != null,
-      variadic: Boolean(param.variadic),
-      byref: Boolean(param.byref),
-    };
-  });
+  const params: PhpParamMeta[] = (node.arguments ?? []).map((param: Node) => ({
+    name: identifierName(param.name) ?? "arg",
+    tsType: declaredType(param.type, Boolean(param.nullable)),
+    optional: param.value != null,
+    variadic: Boolean(param.variadic),
+    byref: Boolean(param.byref),
+  }));
 
   return {
     exportName: name,
     phpName: `${namespace}${name}`,
     params,
-    returnTsType: chooseType(node.type, Boolean(node.nullable), doc?.returns),
-    doc: doc?.summary ?? null,
+    returnTsType: declaredType(node.type, Boolean(node.nullable)),
+    doc: docSummary(node),
   };
 }
 
-/**
- * A variadic collects its arguments into an array, so `@param string[] $args` describes the whole
- * array while PSR-5's `@param string ...$args` describes one element. Both mean `...args: string[]`,
- * and `renderParams` appends the `[]`, so the array spelling gives up one level here.
- */
-function elementType(documented: string | null | undefined, variadic: boolean): string | null {
-  if (!documented || !variadic) return documented ?? null;
-  return documented.endsWith("[]") ? documented.slice(0, -2) || null : documented;
-}
-
-/** A declared type wins over the docblock, except bare `array`/`mixed`, which say less than `@param float[]`. */
-function chooseType(typeNode: TypeNode, isNullable: boolean, documented?: string | null): string {
-  const declared = phpTypeToTs(typeNode);
-  const fromDoc = documented ? docTypeToTs(documented) : "any";
-  const vague = declared === "any" || declared === "PhpArray";
-  const type = vague && fromDoc !== "any" ? fromDoc : declared;
+/** The TypeScript type for a declaration; `?T` folds its null in here. */
+function declaredType(typeNode: TypeNode, isNullable: boolean): string {
+  const type = phpTypeToTs(typeNode);
   return isNullable ? nullable(type) : type;
-}
-
-interface Docblock {
-  summary: string | null;
-  params: Map<string, string>;
-  returns: string | null;
 }
 
 // php-parser never fills `trailingComments`, so a previous statement's trailing `//` lands in this
 // node's `leadingComments`; the docblock is therefore the last `/**` block, not the first comment.
-function readDocblock(node: Node): Docblock | null {
+function docSummary(node: Node): string | null {
   const comments: Node[] = node.leadingComments ?? [];
   const block = comments.findLast(
     (c) => c.kind === "commentblock" && String(c.value).startsWith("/**"),
@@ -177,49 +150,15 @@ function readDocblock(node: Node): Docblock | null {
     .map((line) => line.replace(/^\s*\*/, "").trim());
 
   const summary: string[] = [];
-  const params = new Map<string, string>();
-  let returns: string | null = null;
-  let tagged = false;
-
   for (const line of lines) {
-    // The body is optional: `@internal` on its own is still a tag, and still ends the summary.
-    const tag = /^@(\w+)(?:\s+(.*))?$/.exec(line);
-    if (!tag) {
-      // Any tag ends the summary, even one nobody reads: what follows is that tag's continuation.
-      if (!tagged) summary.push(line);
-      continue;
-    }
-    tagged = true;
-    const [, name, body = ""] = tag;
-    if (name === "param") {
-      const { type, rest } = readType(body);
-      // PSR-5 writes a variadic as `...$args`, which a bare `$name` pattern would drop silently.
-      const varName = /^(?:\.\.\.)?\$(\w+)/.exec(rest.trim())?.[1];
-      if (type && varName) params.set(varName, type);
-    } else if (name === "return" && returns === null) {
-      returns = readType(body).type || null;
-    }
+    // The summary ends at the first tag, even a bodiless one like `@internal`; everything after
+    // belongs to tags, which are not read — docblock types are ignored, only declarations count.
+    if (/^@\w+/.test(line)) break;
+    summary.push(line);
   }
 
   const text = summary.join("\n").trim();
-  return { summary: text || null, params, returns };
-}
-
-/** The type at the front of a tag body, keeping whitespace inside generics: `array<string, int> $x`. */
-function readType(text: string): { type: string; rest: string } {
-  const trimmed = text.trimStart();
-  let depth = 0;
-  let end = trimmed.length;
-  for (let i = 0; i < trimmed.length; i++) {
-    const ch = trimmed[i]!;
-    if ("<{(".includes(ch)) depth++;
-    else if (">})".includes(ch)) depth--;
-    else if (/\s/.test(ch) && depth <= 0) {
-      end = i;
-      break;
-    }
-  }
-  return { type: trimmed.slice(0, end), rest: trimmed.slice(end) };
+  return text || null;
 }
 
 function identifierName(node: unknown): string | null {

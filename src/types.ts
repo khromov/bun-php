@@ -45,7 +45,7 @@ export type StdoutMode = "inherit" | "capture" | "ignore";
 
 export interface PhpModuleApi {
   /** Call a PHP function by its fully-qualified name. */
-  call(name: string, args: readonly unknown[]): Promise<any>;
+  $call(name: string, args: readonly unknown[]): Promise<any>;
   /** Boot the interpreter without calling anything. */
   $ready(): Promise<void>;
   /** Discard all PHP state; the next call boots a fresh interpreter. */
@@ -64,9 +64,13 @@ export interface PhpModuleApi {
 
 /**
  * What an imported `.php` module can carry: `PhpRuntimeOptions` minus everything that cannot survive
- * `JSON.stringify` into generated source, and minus `isolation`, which `createPhpModule` refuses.
+ * `JSON.stringify` into generated source, minus `isolation` (which `createPhpModule` refuses), and
+ * minus `timeoutMs`, which only applies to `cli()` under isolation.
  */
-export type PhpModuleRuntimeOptions = Omit<PhpRuntimeOptions, "loader" | "isolation" | "spawn"> & {
+export type PhpModuleRuntimeOptions = Omit<
+  PhpRuntimeOptions,
+  "loader" | "isolation" | "spawn" | "timeoutMs"
+> & {
   /** Only `"refuse"`; a handler function cannot cross into generated source. */
   spawn?: "refuse";
 };
@@ -115,7 +119,9 @@ export interface PhpRuntimeOptions {
   spawn?: SpawnHandler | "refuse";
   /** Host directories to mount before the first call. */
   mounts?: readonly PhpMount[];
-  /** Default deadline for `cli()`. In-process it only bounds waiting; under isolation it is a SIGKILL. */
+  /** Deadline for `cli()` under `isolation: "process"` only — the child is SIGKILLed. In-process a
+   * running request cannot be interrupted, so no in-process deadline exists; `Promise.race` a timer
+   * yourself to stop waiting. */
   timeoutMs?: number;
   /** `"process"` runs every `cli()` in a child that exits afterwards. Options must then survive JSON. */
   isolation?: "process";
@@ -131,7 +137,8 @@ export type JournalOp =
 export interface PhpCliOptions {
   env?: Record<string, string>;
   cwd?: string;
-  /** Overrides the interpreter's own `timeoutMs`; `0` disables it. */
+  /** Overrides the interpreter's own `timeoutMs`; `0` disables it. Only meaningful under
+   * `isolation: "process"`. */
   timeoutMs?: number;
 }
 

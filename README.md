@@ -115,13 +115,15 @@ await BunPHP.capture`<?php echo "out"; return null;`; // "out" — see below
 `return null;` from a snippet that returned nothing at all. Every other value wins, `false` and `""`
 included.
 
-Both tags are optional: a tag-less snippet is code, `<?= ... ?>` works, and markup around the tags is
-emitted just as it would be from a PHP file:
+Both tags are optional: a snippet is PHP **code**. A leading `<?php` is dropped, `<?=` becomes `echo`,
+and a trailing `?>` becomes `;` — it doubles as a statement terminator, which is what keeps
+`<?= 6 * 7 ?>` valid. Inline markup is not supported: a snippet that starts or ends in HTML fails
+with PHP's own parse error, so `echo` the markup instead:
 
 ```ts
 await BunPHP`return 1 + 1;`; // 2
 await BunPHP.capture`<?= 6 * 7 ?>`; // "42"
-await BunPHP.capture`<p>a</p><?php echo "b";`; // "<p>a</p>b"
+await BunPHP.capture`echo "<p>a</p>";`; // "<p>a</p>"
 ```
 
 Interpolated values are converted to PHP **expressions**, so they go where an expression is valid, not
@@ -155,26 +157,29 @@ declarations, so `import ... from "./hello.php"` gets autocomplete and type erro
 ```ts
 export declare function greet(name: string, greeting?: string): Promise<string>;
 export declare function addAll(...numbers: number[]): Promise<number>;
+export declare function stats(values: PhpArray): Promise<PhpArray>;
 export declare const GREETING: "Hello";
 ```
 
 Commit these generated files or add `*.php.d.ts` to `.gitignore` — either works.
 
-| PHP              | TypeScript                                  |
-| ---------------- | ------------------------------------------- |
-| `int`, `float`   | `number`                                    |
-| `string`         | `string`                                    |
-| `bool`           | `boolean`                                   |
-| `array`          | `PhpValue[] \| { [key: string]: PhpValue }` |
-| `void`           | `void`                                      |
-| `mixed`, no hint | `any`                                       |
-| `?T`, `T\|null`  | `T \| null`                                 |
-| `A\|B`           | `A \| B`                                    |
-| a class name     | `Record<string, unknown>`                   |
+| PHP              | TypeScript                |
+| ---------------- | ------------------------- |
+| `int`, `float`   | `number`                  |
+| `string`         | `string`                  |
+| `bool`           | `boolean`                 |
+| `array`          | `PhpArray`                |
+| `void`           | `void`                    |
+| `mixed`, no hint | `any`                     |
+| `?T`, `T\|null`  | `T \| null`               |
+| `A\|B`           | `A \| B`                  |
+| a class name     | `Record<string, unknown>` |
 
-When a type hint is missing, `@param` / `@return` docblock tags are used instead. A bare `array` hint also
-defers to the docblock, so `@param float[] $values` on `function stats(array $values)` yields
-`values: number[]`. Docblock summaries become JSDoc comments.
+`PhpArray` is `PhpValue[] | { [key: string]: PhpValue }`, declared at the top of every sidecar — PHP
+has one array type and only the call knows which shape comes back. Types come from the declared hints
+only; `@param` / `@return` docblock tags are not read, so a bare `array` hint stays the honest
+`PhpArray` and an unhinted parameter is `any`. A docblock summary still becomes the function's JSDoc
+comment.
 
 Not generating sidecars? Reference the fallback declaration, which types every `.php` import as `any`:
 
@@ -225,7 +230,7 @@ await php.$reset(); // discard all PHP state; the next call boots afresh
 await php.$dispose(); // shut the interpreter down
 const raw = await php.$php(); // the underlying php-wasm PHP instance
 php.$meta; // what the parser found in this file
-await php.call("greet", ["x"]); // call by name
+await php.$call("greet", ["x"]); // call by name
 ```
 
 ## Driving PHP directly
@@ -252,15 +257,15 @@ const { stdout, exitCode } = await php.cli([
 ]);
 ```
 
-| Option       | Default | Meaning                                                                                                             |
-| ------------ | ------- | ------------------------------------------------------------------------------------------------------------------- |
-| `phpVersion` | `"8.5"` | Which build to boot. Any other version must be installed by you — see below.                                        |
-| `loader`     | –       | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.                                             |
-| `ini`        | –       | `php.ini` entries, applied before the first call.                                                                   |
-| `spawn`      | –       | `"refuse"`, or your own handler. See the warning below.                                                             |
-| `mounts`     | –       | `{ host, at }` directories to mount up front.                                                                       |
-| `timeoutMs`  | –       | Deadline for `cli()`. In-process it bounds waiting, not the work (see Limitations); under isolation it's a SIGKILL. |
-| `isolation`  | –       | `"process"` runs each `cli()` in a child process that exits afterwards.                                             |
+| Option       | Default | Meaning                                                                                                                |
+| ------------ | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `phpVersion` | `"8.5"` | Which build to boot. Any other version must be installed by you — see below.                                           |
+| `loader`     | –       | Supply the php-wasm build yourself. Takes precedence over `phpVersion`.                                                |
+| `ini`        | –       | `php.ini` entries, applied before the first call.                                                                      |
+| `spawn`      | –       | `"refuse"`, or your own handler. See the warning below.                                                                |
+| `mounts`     | –       | `{ host, at }` directories to mount up front.                                                                          |
+| `timeoutMs`  | –       | Deadline for `cli()` under `isolation: "process"` only — the child is SIGKILLed. Ignored in-process (see Limitations). |
+| `isolation`  | –       | `"process"` runs each `cli()` in a child process that exits afterwards.                                                |
 
 Beyond `cli()`, an interpreter offers `mount()`, `ini()`, `writeFile()`, `mkdir()`, `php()` (the raw
 php-wasm instance) and `dispose()`. Every `cli()` runs in a fresh PHP instance, and what you staged with
@@ -289,8 +294,8 @@ It fixes three things the in-process interpreter can't:
 
 - **Memory returns to baseline.** The wasm heap retains hundreds of MB across boot/dispose cycles
   in-process; an exiting child hands it back to the OS.
-- **`timeoutMs` actually cancels.** In-process a timeout only abandons the request; here it SIGKILLs the
-  child and the work stops.
+- **`timeoutMs` exists here.** In-process a running request can't be interrupted, so bun-php offers no
+  deadline there; under isolation the deadline SIGKILLs the child and the work stops.
 - **Calls run in parallel.** Two concurrent one-second calls take 1.04× the time of one, versus 1.96×
   in-process.
 
@@ -355,15 +360,12 @@ Bun.build({
 | `filter`   | `/\.php$/`  | Which files to handle.                                                                                    |
 | `mount`    | `true`      | Mount the project directory so sibling `require`s and Composer resolve. `false` drops the autoloader too. |
 | `autoload` | auto        | Path to a file to require before each call. Auto-detects `vendor/autoload.php`; `false` disables.         |
-| `runtime`  | -           | Interpreter options for every module loaded: `phpVersion`, `ini`, `mounts`, `spawn`, `timeoutMs`.         |
-
-As in-process everywhere, `runtime.timeoutMs` bounds how long you **wait**: the call rejects with
-`PhpTimeoutError` while the PHP keeps running, and later calls queue behind it. Only `isolation: "process"`
-can actually cancel.
+| `runtime`  | -           | Interpreter options for every module loaded: `phpVersion`, `ini`, `mounts`, `spawn`.                      |
 
 `runtime` reaches the module as generated source, so it takes only what survives JSON: `loader`, a
-`spawn` handler function and `isolation` are rejected up front. Reach for `createInterpreter` when you
-need those.
+`spawn` handler function and `isolation` are rejected up front. `timeoutMs` is rejected too, for a
+different reason — module calls have no deadline at all (see Limitations), so accepting it would be
+dead configuration. Reach for `createInterpreter` when you need any of them.
 
 ```ts
 phpPlugin({ runtime: { phpVersion: "8.3", ini: { memory_limit: "256M" } } });
@@ -402,9 +404,19 @@ Use `$eval` or module-level PHP for state within a single call, or keep state on
 
 **A running PHP request can't be interrupted, and in-process calls don't run in parallel.** The wasm holds
 the thread, `max_execution_time` is ignored, and `PHP.exit()` mid-call returns without stopping anything.
-In-process `timeoutMs` rejects your promise but the PHP keeps running, and two concurrent one-second calls
-take two seconds. `isolation: "process"` is the answer to both, and it's crash-safe too: an uncatchable
-wasm abort takes only its own child.
+That is why there is no in-process timeout option: a deadline that could only reject your promise while
+the PHP kept running would buy nothing. To stop _waiting_, race the call yourself — the PHP still runs to
+completion, and later calls queue behind it:
+
+```ts
+const value = await Promise.race([
+  slowPhpCall(),
+  new Promise((_, reject) => setTimeout(() => reject(new Error("gave up waiting")), 5_000)),
+]);
+```
+
+`isolation: "process"` is the real answer: its `timeoutMs` SIGKILLs the child, calls run in parallel, and
+it's crash-safe too — an uncatchable wasm abort takes only its own child.
 
 **Other things to know:**
 
@@ -429,9 +441,10 @@ wasm abort takes only its own child.
   rejects it, so a file declaring one fails to import.
 - **Only what you mount exists** inside the virtual filesystem. Don't reach for `open_basedir` or
   `disable_functions` as a substitute; their behaviour under php-wasm varies by build.
-- **Short open tags are off, and pinned.** bun-php sets `short_open_tag=0` on every build, so `<? ... ?>`
-  is markup rather than code and `<?xml version="1.0"?>` passes through untouched. `<?php` and `<?=` are
-  unaffected. Setting `short_open_tag` yourself logs a warning and is ignored: php-parser reads `<?` as
+- **Short open tags are off, and pinned.** bun-php sets `short_open_tag=0` on every build, so in a
+  `.php` file `<? ... ?>` is markup rather than code and `<?xml version="1.0"?>` passes through
+  untouched. In an inline `BunPHP` snippet a leading `<?` is simply left in place, which PHP then
+  rejects, since snippets are code. `<?php` and `<?=` are unaffected. Setting `short_open_tag` yourself logs a warning and is ignored: php-parser reads `<?` as
   markup, and a runtime that disagreed made a `<?` file export nothing at all.
 - **Constants are evaluated at build time**, so a shape whose value depends on the PHP version isn't
   exported at all: an array key past 2^53, or an implicit key following a negative one (PHP 8.3

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PhpTimeoutError } from "../src/errors";
 import { createInterpreter } from "../src/interpreter";
 import { buildImportError, PhpBuildLoadError, PhpBuildNotInstalledError } from "../src/php-runtime";
 import { isBuildInstalled } from "./php-builds";
@@ -287,50 +286,6 @@ describe("phpVersion", () => {
   );
 
   test(
-    "the wasm boot is not charged to the deadline",
-    async () => {
-      // A cold cli() used to time out on startup alone and needlessly retire the interpreter, while
-      // the module path deliberately excluded it. The loader is slowed so the boot alone outlasts
-      // the budget, leaving the call itself room on a slow runner.
-      const php = createInterpreter({
-        timeoutMs: 400,
-        loader: async () => {
-          await Bun.sleep(1000);
-          return (await import("@php-wasm/node-8-5")).getPHPLoaderModule();
-        },
-      });
-      try {
-        expect((await php.cli(["php", "-r", "echo 'quick';"])).stdout).toBe("quick");
-        expect(php.retired).toBe(false);
-      } finally {
-        await php.dispose();
-      }
-    },
-    BOOT_MS,
-  );
-
-  test(
-    "retired goes away with the instance it described",
-    async () => {
-      // dispose() boots a replacement that no abandoned request owns, so the flag must not stick.
-      const php = createInterpreter({ timeoutMs: 200 });
-      await php
-        .cli(["php", "-r", "$t=microtime(true); while (microtime(true)-$t < 3) {}"])
-        .catch(() => {});
-      expect(php.retired).toBe(true);
-
-      await php.dispose();
-      expect(php.retired).toBe(false);
-      // Untimed: the abandoned loop still holds the wasm, so this call waits for it, and the
-      // interpreter's own 200ms deadline would fire on a slow runner before it ever starts.
-      const recovered = await php.cli(["php", "-r", "echo 'healthy';"], { timeoutMs: 0 });
-      expect(recovered.stdout).toBe("healthy");
-      await php.dispose();
-    },
-    BOOT_MS,
-  );
-
-  test(
     "an op that fails is not recorded in the journal",
     async () => {
       // Recorded regardless, it replays onto every later boot: the caller is told the mount failed
@@ -432,44 +387,6 @@ describe("phpVersion", () => {
       try {
         const result = await php.cli(["php", "-r", "echo PHP_VERSION;"]);
         expect(result.stdout.startsWith("8.5.")).toBe(true);
-      } finally {
-        await php.dispose();
-      }
-    },
-    BOOT_MS,
-  );
-});
-
-describe("timeouts", () => {
-  test(
-    "a call past its deadline rejects and retires the interpreter",
-    async () => {
-      const php = createInterpreter({ timeoutMs: 500 });
-      try {
-        const error = await php
-          .cli(["php", "-r", "$t=microtime(true); while (microtime(true)-$t < 5) {}"])
-          .catch((err: unknown) => err);
-        expect(error).toBeInstanceOf(PhpTimeoutError);
-        expect((error as PhpTimeoutError).timeoutMs).toBe(500);
-        // The request is still running; reusing this interpreter would queue behind it.
-        expect(php.retired).toBe(true);
-      } finally {
-        await php.dispose();
-      }
-    },
-    BOOT_MS,
-  );
-
-  test(
-    "a per-call timeout overrides the interpreter default",
-    async () => {
-      const php = createInterpreter({ timeoutMs: 1 });
-      try {
-        const result = await php.cli(["php", "-r", 'echo "ok";'], {
-          timeoutMs: 0,
-        });
-        expect(result.stdout).toBe("ok");
-        expect(php.retired).toBe(false);
       } finally {
         await php.dispose();
       }

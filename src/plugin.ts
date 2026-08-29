@@ -57,13 +57,15 @@ export function phpPlugin(options: PhpPluginOptions = {}): BunPlugin {
 }
 
 // The options reach the module as generated source, so anything a function or a live object cannot
-// cross. TypeScript rules these out already; this is the guard for JavaScript callers.
+// cross; `timeoutMs` is rejected for a different reason — module calls have no deadline at all, and
+// accepting it silently is the dead configuration this used to ship. TypeScript rules all of these
+// out already; this is the guard for JavaScript callers.
 function assertSerialisable(runtime: PhpModuleRuntimeOptions): PhpModuleRuntimeOptions {
-  const offending = ["loader", "isolation"].filter((key) => key in runtime);
+  const offending = ["loader", "isolation", "timeoutMs"].filter((key) => key in runtime);
   if (typeof (runtime as { spawn?: unknown }).spawn === "function") offending.push("spawn");
   if (offending.length > 0) {
     throw new TypeError(
-      `phpPlugin: runtime.${offending.join(", runtime.")} cannot cross into a generated module; ` +
+      `phpPlugin: runtime.${offending.join(", runtime.")} is not supported for imported .php modules; ` +
         "use createInterpreter, or createPhpModule from bun-php/runtime",
     );
   }

@@ -93,9 +93,9 @@ for (const { label, version } of TARGETS) {
     test(
       "calls a function and marshals its arguments",
       async () => {
-        expect(await php.call("greet", ["world"])).toBe("Hello, world!");
-        expect(await php.call("addAll", [1, 2, 3, 4, 5])).toBe(15);
-        expect(await php.call("withDefault", ["a"])).toBe("a/default");
+        expect(await php.$call("greet", ["world"])).toBe("Hello, world!");
+        expect(await php.$call("addAll", [1, 2, 3, 4, 5])).toBe(15);
+        expect(await php.$call("withDefault", ["a"])).toBe("a/default");
       },
       BOOT_MS,
     );
@@ -103,11 +103,11 @@ for (const { label, version } of TARGETS) {
     test(
       "every value shape survives the round trip",
       async () => {
-        expect(await php.call("makeList", [])).toEqual([1, 2, 3]);
-        expect(await php.call("makeAssoc", [])).toEqual({ a: 1, nested: { b: true } });
-        expect(await php.call("echoNull", [])).toBeNull();
-        expect(await php.call("nothing", [])).toBeNull();
-        expect(await php.call("bigInt", [])).toBe(9223372036854776000);
+        expect(await php.$call("makeList", [])).toEqual([1, 2, 3]);
+        expect(await php.$call("makeAssoc", [])).toEqual({ a: 1, nested: { b: true } });
+        expect(await php.$call("echoNull", [])).toBeNull();
+        expect(await php.$call("nothing", [])).toBeNull();
+        expect(await php.$call("bigInt", [])).toBe(9223372036854776000);
 
         const payload = {
           str: "héllo ✓",
@@ -118,9 +118,9 @@ for (const { label, version } of TARGETS) {
           list: [1, "two", true],
           nested: { deep: { deeper: [1, 2] } },
         };
-        expect(await php.call("roundTrip", [payload])).toEqual(payload);
+        expect(await php.$call("roundTrip", [payload])).toEqual(payload);
         // PHP has one array type, so both spellings of "empty" come back as an empty JS array.
-        expect(await php.call("roundTrip", [{ a: [], b: {} }])).toEqual({ a: [], b: [] });
+        expect(await php.$call("roundTrip", [{ a: [], b: {} }])).toEqual({ a: [], b: [] });
       },
       BOOT_MS,
     );
@@ -129,7 +129,7 @@ for (const { label, version } of TARGETS) {
       "streams stdout and keeps it out of the return value",
       async () => {
         php.$output();
-        expect(await php.call("talks", ["hi"])).toBe("HI");
+        expect(await php.$call("talks", ["hi"])).toBe("HI");
         expect(php.$output()).toContain("spoken: hi");
       },
       BOOT_MS,
@@ -139,7 +139,7 @@ for (const { label, version } of TARGETS) {
       "output written after the envelope still arrives",
       async () => {
         php.$output();
-        expect(await php.call("withShutdown", [])).toBe(41);
+        expect(await php.$call("withShutdown", [])).toBe(41);
         expect(php.$output()).toContain("bye");
       },
       BOOT_MS,
@@ -148,7 +148,7 @@ for (const { label, version } of TARGETS) {
     test(
       "a PHP exception becomes a PhpError carrying its class",
       async () => {
-        const error = await php.call("boom", []).catch((err: unknown) => err);
+        const error = await php.$call("boom", []).catch((err: unknown) => err);
         expect(error).toBeInstanceOf(PhpError);
         expect((error as PhpError).phpClass).toBe("RuntimeException");
         expect((error as PhpError).message).toContain("kaboom");
@@ -160,8 +160,8 @@ for (const { label, version } of TARGETS) {
     test(
       "exit() becomes a PhpFatalError and an undefined function rejects by name",
       async () => {
-        await expect(php.call("quits", [])).rejects.toThrow(PhpFatalError);
-        await expect(php.call("no_such_function", [])).rejects.toThrow(/no_such_function/);
+        await expect(php.$call("quits", [])).rejects.toThrow(PhpFatalError);
+        await expect(php.$call("no_such_function", [])).rejects.toThrow(/no_such_function/);
       },
       BOOT_MS,
     );
@@ -170,7 +170,7 @@ for (const { label, version } of TARGETS) {
       "$reset re-boots the same build",
       async () => {
         await php.$reset();
-        expect(await php.call("greet", ["reset"])).toBe("Hello, reset!");
+        expect(await php.$call("greet", ["reset"])).toBe("Hello, reset!");
         expect(await php.$eval("return PHP_VERSION;")).toStartWith(`${expected}.`);
       },
       BOOT_MS,
