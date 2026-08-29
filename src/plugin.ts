@@ -66,7 +66,8 @@ function assertSerialisable(runtime: PhpModuleRuntimeOptions): PhpModuleRuntimeO
   if (offending.length > 0) {
     throw new TypeError(
       `phpPlugin: runtime.${offending.join(", runtime.")} is not supported for imported .php modules; ` +
-        "use createInterpreter, or createPhpModule from bun-php/runtime",
+        // `createPhpModule` takes `loader` and a `spawn` handler, but refuses the other two itself.
+        "use createInterpreter, or createPhpModule from bun-php/runtime for loader and spawn",
     );
   }
   return runtime;

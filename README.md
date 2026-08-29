@@ -295,7 +295,8 @@ It fixes three things the in-process interpreter can't:
 - **Memory returns to baseline.** The wasm heap retains hundreds of MB across boot/dispose cycles
   in-process; an exiting child hands it back to the OS.
 - **`timeoutMs` exists here.** In-process a running request can't be interrupted, so bun-php offers no
-  deadline there; under isolation the deadline SIGKILLs the child and the work stops.
+  deadline there — it's refused rather than ignored. Under isolation the deadline SIGKILLs the child,
+  the work stops, and the call rejects with `PhpTimeoutError`.
 - **Calls run in parallel.** Two concurrent one-second calls take 1.04× the time of one, versus 1.96×
   in-process.
 
@@ -444,8 +445,9 @@ it's crash-safe too — an uncatchable wasm abort takes only its own child.
 - **Short open tags are off, and pinned.** bun-php sets `short_open_tag=0` on every build, so in a
   `.php` file `<? ... ?>` is markup rather than code and `<?xml version="1.0"?>` passes through
   untouched. In an inline `BunPHP` snippet a leading `<?` is simply left in place, which PHP then
-  rejects, since snippets are code. `<?php` and `<?=` are unaffected. Setting `short_open_tag` yourself logs a warning and is ignored: php-parser reads `<?` as
-  markup, and a runtime that disagreed made a `<?` file export nothing at all.
+  rejects, since snippets are code. `<?php` and `<?=` are unaffected. Setting `short_open_tag` yourself
+  logs a warning and is ignored: php-parser reads `<?` as markup, and a runtime that disagreed made a
+  `<?` file export nothing at all.
 - **Constants are evaluated at build time**, so a shape whose value depends on the PHP version isn't
   exported at all: an array key past 2^53, or an implicit key following a negative one (PHP 8.3
   changed where it resumes). Those land in the `// Not exported:` trailer instead of exporting a

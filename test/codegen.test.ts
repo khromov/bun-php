@@ -131,6 +131,13 @@ describe("generated .d.ts", () => {
     expect(dts).toContain("...rest: (number | string)[]");
   });
 
+  test("a union member carrying its own brackets is still one member", () => {
+    // Where `members()` earns its depth tracking: splitting on every ` | ` would find three
+    // members in `Record<string, unknown> | number` and parenthesise nothing.
+    const { dts } = build(`function f(\\App\\Thing|int ...$rest): int {}`);
+    expect(dts).toContain("...rest: (Record<string, unknown> | number)[]");
+  });
+
   test("carries the docblock summary into JSDoc", () => {
     const { dts } = build(`/** Greets someone. */ function greet(): string {}`);
     expect(dts).toContain("* Greets someone.");

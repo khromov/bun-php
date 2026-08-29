@@ -182,6 +182,14 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
       "isolation is not supported for imported .php modules; use createInterpreter",
     );
   }
+  // Loud rather than inert: a module call has no deadline, and silently ignoring one is the bug
+  // this used to ship. Only `createInterpreter` with `isolation: "process"` can honour it.
+  if ("timeoutMs" in runtime) {
+    throw new TypeError(
+      "timeoutMs is not supported for imported .php modules; a module call has no deadline. " +
+        'Use createInterpreter with isolation: "process", or race a timer yourself.',
+    );
+  }
 
   // Everything that decides which interpreter to boot; `loader` and `spawn` are compared by identity.
   const { loader, spawn, ...serialisable } = runtime;

@@ -227,15 +227,18 @@ is a genuinely different function and stays ignored.
 `arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
 transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,
 so `Bun.Transpiler` alone is not proof a generated module loads — `test/e2e.test.ts` imports a `yield`
-constant through the real loader for exactly that reason. `example/hello.php.d.ts` is the only committed sidecar, so a
-refactor that changes it has changed generated output for everyone: regenerate it by running the example
-rather than hand-editing, and make sure the diff is one you meant.
+constant through the real loader for exactly that reason. `example/hello.php.d.ts` is the only committed
+sidecar, so a refactor that changes it has changed generated output for everyone: regenerate it by
+running the example rather than hand-editing, and make sure the diff is one you meant.
 
 **Type-mapping changes** go in `TS_TYPES` in `php-types.ts`, which mirrors php-parser's own
 `TypeReference.types` list — nothing else can reach it, since docblock tags are not read. A name outside
-that list is `any` from a `typereference` node or `Record<string, unknown>` from a `name` node, which is
-why dropping `self` was safe and keeping `static` was not optional. Lookup goes through `tsType`, which
-uses `Object.hasOwn` so a PHP type spelled `constructor` cannot pull a function off `Object.prototype`.
+that list never reaches the map at all: a class name arrives as a `name` node and becomes
+`Record<string, unknown>`, while `self` and `parent` get their own node kinds (`selfreference`,
+`parentreference`) and fall to the `any` default — which is why dropping the `self` key was safe, and
+why `static`, which really is a `typereference`, had to stay. Lookup goes through `tsType`, whose
+`Object.hasOwn` is belt-and-braces: php-parser only mints `typereference` for those 15 names, so a
+type spelled `constructor` cannot reach it today, but the map is a plain object literal.
 All that is left of the old precedence rule is `declaredType` in `parse.ts`: the declaration, with `?T`
 folding its null through `nullable`. `members` splits a converted type at bracket depth 0 and is what
 `union`, `nullable` and `parenthesised` all agree on, so a `|` or a `null` nested inside brackets is not
@@ -247,8 +250,10 @@ generated module by `generateModule`, so `PhpModuleRuntimeOptions` drops `loader
 `spawn` (neither survives `JSON.stringify`) and `isolation` (which `createPhpModule` refuses outright).
 It also drops `timeoutMs`, for a different reason: a module call has no deadline, so carrying it would be
 dead configuration. `assertSerialisable` in `plugin.ts` repeats all of that for JavaScript callers, and
-`CreatePhpModuleOptions["runtime"]` omits `timeoutMs` so the direct caller cannot set it either. The key is omitted entirely
-when unset, so a module without runtime options generates byte-identically to before.
+`createPhpModule` throws for `timeoutMs` beside its existing `isolation` guard, because the type-level
+`Omit` alone left the direct caller free to pass one in JavaScript and have it quietly do nothing. The
+key is omitted entirely when unset, so a module without runtime options generates byte-identically to
+before.
 
 **PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
 `@php-wasm/node-X-Y` resolved with a dynamic `import()`. `buildImportError` classifies a failed import

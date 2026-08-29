@@ -72,6 +72,34 @@ describe("default export", () => {
   });
 });
 
+describe("refused runtime options", () => {
+  const bad = (runtime: unknown) => () =>
+    createPhpModule({
+      id: "/virtual/refused.php",
+      source: "<?php\n",
+      functions: {},
+      meta,
+      stdout: "ignore",
+      runtime: runtime as never,
+    });
+
+  test("isolation is refused: a module runs many calls against one live instance", () => {
+    expect(bad({ isolation: "process" })).toThrow(/isolation is not supported/);
+  });
+
+  test("timeoutMs is refused rather than accepted and ignored", () => {
+    // The whole point: a module call has no deadline, so taking one would be dead configuration.
+    expect(bad({ timeoutMs: 5_000 })).toThrow(/timeoutMs is not supported/);
+    // Zero is still a value someone set expecting it to mean something.
+    expect(bad({ timeoutMs: 0 })).toThrow(/timeoutMs is not supported/);
+  });
+
+  test("the options a module can carry are accepted", () => {
+    expect(bad({ phpVersion: "8.5", ini: { memory_limit: "256M" } })).not.toThrow();
+    cache().delete("/virtual/refused.php");
+  });
+});
+
 describe("streaming output", () => {
   test("output arrives while the script is still running", async () => {
     const module = createPhpModule({
