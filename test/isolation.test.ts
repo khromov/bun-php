@@ -115,8 +115,6 @@ describe("isolation: 'process'", () => {
       expect(error).toBeInstanceOf(PhpTimeoutError);
       // In-process this loop would run forever; the kill lands near the deadline.
       expect(Date.now() - started).toBeLessThan(5_000);
-      // No retirement: the dead child took the whole request with it.
-      expect(php.retired).toBe(false);
       const after = await php.cli(["php", "-r", 'echo "alive";'], { timeoutMs: 0 });
       expect(after.stdout).toBe("alive");
     },

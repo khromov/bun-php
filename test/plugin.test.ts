@@ -230,13 +230,15 @@ describe("runtime options", () => {
     expect(contents).not.toContain("runtime:");
   });
 
-  test("refuse anything that cannot cross into generated source", () => {
+  test("refuse anything an imported module cannot carry", () => {
     const bad = (runtime: unknown) => () => phpPlugin({ runtime } as PhpPluginOptions);
     expect(bad({ loader: async () => ({}) })).toThrow(/runtime\.loader/);
     expect(bad({ spawn: () => ({}) })).toThrow(/runtime\.spawn/);
     expect(bad({ isolation: "process" })).toThrow(/runtime\.isolation/);
-    // The serialisable ones are fine.
-    expect(bad({ phpVersion: "8.3", spawn: "refuse", timeoutMs: 10 })).not.toThrow();
+    // Not a serialisation problem: module calls have no deadline, so this would be dead config.
+    expect(bad({ timeoutMs: 5_000 })).toThrow(/runtime\.timeoutMs/);
+    // The ones a module can carry are fine.
+    expect(bad({ phpVersion: "8.3", spawn: "refuse" })).not.toThrow();
   });
 });
 
@@ -256,7 +258,7 @@ describe("stdout modes", () => {
 
   test("capture collects echo output instead of printing it", async () => {
     const mod = moduleWith("capture", "/virtual/capture.php");
-    expect(await mod.call("talks", [])).toBe("value");
+    expect(await mod.$call("talks", [])).toBe("value");
     expect(mod.$output()).toBe("side-effect");
     // Draining leaves the buffer empty.
     expect(mod.$output()).toBe("");
@@ -265,7 +267,7 @@ describe("stdout modes", () => {
 
   test("ignore discards echo output", async () => {
     const mod = moduleWith("ignore", "/virtual/ignore.php");
-    expect(await mod.call("talks", [])).toBe("value");
+    expect(await mod.$call("talks", [])).toBe("value");
     expect(mod.$output()).toBe("");
     await mod.$dispose();
   });

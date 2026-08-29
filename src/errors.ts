@@ -24,7 +24,7 @@ export class PhpError extends Error {
   }
 }
 
-/** A call outlived its deadline. In-process the PHP work is not stopped; php-wasm cannot interrupt it. */
+/** A `cli()` under `isolation: "process"` outlived its deadline; the child was SIGKILLed. */
 export class PhpTimeoutError extends Error {
   override readonly name = "PhpTimeoutError";
   constructor(

@@ -197,7 +197,8 @@ describe("docblocks", () => {
       function f($a) {}
     `);
     expect(f.doc).toBe("Does a thing.");
-    expect(signature(f)).toBe("(a: number) => string");
+    // The tags name types, but tags are not read: only declarations are.
+    expect(signature(f)).toBe("(a: any) => any");
   });
 
   test("takes the last docblock, not a stray preceding comment", () => {
@@ -209,11 +210,8 @@ describe("docblocks", () => {
     expect(f.doc).toBe("The real docblock.");
   });
 
-  test("a declared type beats the docblock", () => {
-    expect(fn(`/** @param int $a */ function f(string $a) {}`).params[0]!.tsType).toBe("string");
-  });
-
-  test("the docblock beats a bare array hint", () => {
+  test("docblock types never override or refine a declaration", () => {
+    // A bare `array` stays the honest `PhpArray` whatever the docblock promises about its shape.
     const f = fn(`
       /**
        * @param float[] $values
@@ -221,66 +219,39 @@ describe("docblocks", () => {
        */
       function f(array $values): array {}
     `);
-    expect(signature(f)).toBe("(values: number[]) => Record<string, number>");
+    expect(signature(f)).toBe("(values: PhpArray) => PhpArray");
+    // And a documented type does not stand in for a missing declaration.
+    expect(signature(fn(`/** @param int $a */ function f($a) {}`))).toBe("(a: any) => any");
   });
 
-  test("integer-keyed generics are lists, not records", () => {
-    expect(fn(`/** @return array<int, string> */ function f() {}`).returnTsType).toBe("string[]");
-    expect(fn(`/** @return list<int> */ function f() {}`).returnTsType).toBe("number[]");
-    expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType).toBe(
-      "Record<string, number>",
+  test("a tag with no body is still a tag", () => {
+    // `@internal` matched nothing, so it leaked into the summary and failed to close it.
+    const meta = fn(
+      `/**
+        * Real summary.
+        *
+        * @internal
+        * this line belongs to @internal
+        */
+       function f(): int {}`,
+      "f",
     );
+    expect(meta.doc).toBe("Real summary.");
   });
 
-  test("generics containing spaces are not truncated", () => {
-    expect(fn(`/** @return array<string, int> */ function f() {}`).returnTsType).toBe(
-      "Record<string, number>",
+  test("the summary stops at the first tag, whichever tag it is", () => {
+    const meta = fn(
+      `/**
+        * Real summary.
+        *
+        * @throws RuntimeException when the widget explodes
+        *   and this line continues @throws, not the summary
+        * @param int $n
+        */
+       function f(int $n): int {}`,
+      "f",
     );
-  });
-
-  test("nullable declaration survives a docblock override", () => {
-    expect(fn(`/** @param int[] $a */ function f(?array $a) {}`).params[0]!.tsType).toBe(
-      "number[] | null",
-    );
-  });
-
-  test("unions inside generics are not shredded", () => {
-    expect(fn(`/** @return array<int|string> */ function f() {}`).returnTsType).toBe(
-      "(number | string)[]",
-    );
-    expect(fn(`/** @return array<string, int|null> */ function f() {}`).returnTsType).toBe(
-      "Record<string, number | null>",
-    );
-  });
-
-  test("a parenthesised union with an array suffix survives", () => {
-    expect(fn(`/** @param (int|string)[] $x */ function f(array $x) {}`).params[0]!.tsType).toBe(
-      "(number | string)[]",
-    );
-  });
-});
-
-describe("docblock unions", () => {
-  test("an alias that expands to several members is deduped by member", () => {
-    // `scalar` is three types; deduping whole parts left `string | number | boolean | string`.
-    expect(fn(`/** @param scalar|string $a */ function f($a) {}`).params[0]!.tsType).toBe(
-      "string | number | boolean",
-    );
-    expect(fn(`/** @param int|scalar $a */ function f($a) {}`).params[0]!.tsType).toBe(
-      "number | string | boolean",
-    );
-  });
-
-  test("a union of distinct types is untouched", () => {
-    expect(fn(`/** @param int|string $a */ function f($a) {}`).params[0]!.tsType).toBe(
-      "number | string",
-    );
-  });
-
-  test("a suffixed or parenthesised member is one type, not an alternation", () => {
-    expect(fn(`/** @param (int|string)[] $a */ function f($a) {}`).params[0]!.tsType).toBe(
-      "(number | string)[]",
-    );
+    expect(meta.doc).toBe("Real summary.");
   });
 });
 
@@ -440,55 +411,5 @@ describe("errors", () => {
       expect((error as PhpParseError).file).toBe("/virtual/bad.php");
       expect((error as PhpParseError).line).toBe(1);
     }
-  });
-});
-
-describe("docblock types for variadics", () => {
-  test("a variadic is typed the same however the docblock spells it", () => {
-    // PSR-5 describes one element, the array form describes the collected array; both mean string[].
-    const psr5 = fn(`/** @param string ...$args */ function f(...$args) {}`, "f");
-    const arrayForm = fn(`/** @param string[] $args */ function f(...$args) {}`, "f");
-    const declared = fn(`function f(string ...$args) {}`, "f");
-
-    expect(psr5.params[0]!.tsType).toBe("string");
-    expect(arrayForm.params[0]!.tsType).toBe("string");
-    expect(declared.params[0]!.tsType).toBe("string");
-  });
-
-  test("a non-variadic keeps the docblock type exactly", () => {
-    // Only a variadic gives up a level; `@param string[] $rows` on a plain parameter is an array.
-    expect(fn(`/** @param string[] $rows */ function f($rows) {}`, "f").params[0]!.tsType).toBe(
-      "string[]",
-    );
-  });
-
-  test("a tag with no body is still a tag", () => {
-    // `@internal` matched nothing, so it leaked into the summary and failed to close it.
-    const meta = fn(
-      `/**
-        * Real summary.
-        *
-        * @internal
-        * this line belongs to @internal
-        */
-       function f(): int {}`,
-      "f",
-    );
-    expect(meta.doc).toBe("Real summary.");
-  });
-
-  test("the summary stops at the first tag, whichever tag it is", () => {
-    const meta = fn(
-      `/**
-        * Real summary.
-        *
-        * @throws RuntimeException when the widget explodes
-        *   and this line continues @throws, not the summary
-        * @param int $n
-        */
-       function f(int $n): int {}`,
-      "f",
-    );
-    expect(meta.doc).toBe("Real summary.");
   });
 });

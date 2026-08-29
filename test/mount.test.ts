@@ -59,7 +59,7 @@ function callHelper(): string { return helper(); }
 `;
     await Bun.write(main, source);
 
-    expect(await moduleFor(main, source).call("callHelper", [])).toBe("helped");
+    expect(await moduleFor(main, source).$call("callHelper", [])).toBe("helped");
   });
 
   test("a nested file can be required", async () => {
@@ -76,7 +76,7 @@ function callNested(): int { return nested(); }
 `;
     await Bun.write(main, source);
 
-    expect(await moduleFor(main, source).call("callNested", [])).toBe(7);
+    expect(await moduleFor(main, source).$call("callNested", [])).toBe(7);
   });
 
   test("__DIR__ and __FILE__ report the real host paths", async () => {
@@ -87,7 +87,7 @@ function whereAmI(): array { return ['dir' => __DIR__, 'file' => __FILE__]; }
 `;
     await Bun.write(main, source);
 
-    expect(await moduleFor(main, source).call("whereAmI", [])).toEqual({
+    expect(await moduleFor(main, source).$call("whereAmI", [])).toEqual({
       dir,
       file: main,
     });
@@ -105,7 +105,7 @@ function readLate(): string { return trim(file_get_contents(__DIR__ . '/late.txt
 
     // Written after the interpreter booted and mounted the directory.
     await Bun.write(join(dir, "late.txt"), "written later");
-    expect(await mod.call("readLate", [])).toBe("written later");
+    expect(await mod.$call("readLate", [])).toBe("written later");
   });
 
   test("files can be read and written back to the host", async () => {
@@ -116,7 +116,7 @@ function writeOut(string $text): int { return file_put_contents(__DIR__ . '/out.
 `;
     await Bun.write(main, source);
 
-    await moduleFor(main, source).call("writeOut", ["from php"]);
+    await moduleFor(main, source).$call("writeOut", ["from php"]);
     expect(await Bun.file(join(dir, "out.txt")).text()).toBe("from php");
   });
 });
@@ -135,7 +135,7 @@ describe("autoload", () => {
 
     const project = resolveProject(main);
     expect(project.autoload).toBe(join(dir, "vendor", "autoload.php"));
-    expect(await moduleFor(main, source).call("useAutoload", [])).toBe("autoloaded");
+    expect(await moduleFor(main, source).$call("useAutoload", [])).toBe("autoloaded");
   });
 
   test("the autoloader is re-registered on every call", async () => {
@@ -155,8 +155,8 @@ describe("autoload", () => {
     await Bun.write(main, source);
 
     const mod = moduleFor(main, source);
-    expect(await mod.call("useLazy", [])).toBe("lazy hi");
-    expect(await mod.call("useLazy", [])).toBe("lazy hi");
+    expect(await mod.$call("useLazy", [])).toBe("lazy hi");
+    expect(await mod.$call("useLazy", [])).toBe("lazy hi");
   });
 });
 
@@ -169,7 +169,7 @@ describe("fallback when the directory is not on disk", () => {
       autoload: null,
     });
 
-    expect(await mod.call("inlined", [])).toBe("from inlined source");
+    expect(await mod.$call("inlined", [])).toBe("from inlined source");
   });
 
   test("a root that exists without the module file still uses the inlined source", async () => {
@@ -179,7 +179,7 @@ describe("fallback when the directory is not on disk", () => {
     const source = `<?php function ghost(): string { return "from inlined source"; }`;
     const mod = moduleFor(join(dir, "never-written.php"), source, { root: dir, autoload: null });
 
-    expect(await mod.call("ghost", [])).toBe("from inlined source");
+    expect(await mod.$call("ghost", [])).toBe("from inlined source");
   });
 
   test("an autoloader that was never mounted is not required", async () => {
@@ -191,6 +191,6 @@ describe("fallback when the directory is not on disk", () => {
       autoload: "/nowhere/on/disk/vendor/autoload.php",
     });
 
-    expect(await mod.call("stillWorks", [])).toBe("no autoloader needed");
+    expect(await mod.$call("stillWorks", [])).toBe("no autoloader needed");
   });
 });

@@ -1,8 +1,8 @@
 import type { PHP } from "@php-wasm/universal";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { PhpFatalError, PhpTimeoutError } from "./errors";
-import { PhpInterpreter, withDeadline } from "./interpreter";
+import { PhpFatalError } from "./errors";
+import { PhpInterpreter } from "./interpreter";
 import { buildCallScript, EnvelopeSplitter, encodeArgs, unwrapEnvelope } from "./marshal";
 import { writeFileOp } from "./php-runtime";
 import type {
@@ -26,7 +26,8 @@ export interface CreatePhpModuleOptions {
   root?: string | null;
   /** Composer autoloader to require before the module, if any. */
   autoload?: string | null;
-  runtime?: PhpRuntimeOptions;
+  /** No `timeoutMs`: a module call has no deadline, so accepting one would be dead configuration. */
+  runtime?: Omit<PhpRuntimeOptions, "timeoutMs">;
 }
 
 // Cached on globalThis, not in a module variable: `bun --hot` resets the module registry on every
@@ -75,28 +76,11 @@ class PhpInstance {
 
   run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
     const work = this.#run(expression, label, sink);
-    // `#running` tracks the request, not the caller's view of it: a deadline rejects the caller while
-    // the PHP runs on, and a drain that forgot it would exit the runtime out from under it.
-    const tracked = work.catch(() => {});
-    this.#running.add(tracked);
-    void tracked.then(() => this.#running.delete(tracked));
-
-    const timeoutMs = this.runtime.timeoutMs ?? 0;
-    if (timeoutMs <= 0) return work;
-    // Armed once the boot is done: a cold first call would otherwise spend its whole budget on wasm
-    // startup, which the caller cannot influence, and then succeed on the retry.
-    return this.php().then(() =>
-      // Waiting only, as in-process always is: the request runs on, and later calls queue behind it.
-      withDeadline(
-        work,
-        timeoutMs,
-        () =>
-          new PhpTimeoutError(
-            `${label}: PHP call exceeded ${timeoutMs}ms; the request is still running and later calls queue behind it`,
-            timeoutMs,
-          ),
-      ),
-    );
+    // Tracked so reset/dispose can wait out in-flight calls before exiting the runtime under them.
+    this.#running.add(work);
+    const done = () => this.#running.delete(work);
+    work.then(done, done);
+    return work;
   }
 
   async #run(expression: string, label: string, sink?: (text: string) => void): Promise<unknown> {
@@ -198,6 +182,14 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
       "isolation is not supported for imported .php modules; use createInterpreter",
     );
   }
+  // Loud rather than inert: a module call has no deadline, and silently ignoring one is the bug
+  // this used to ship. Only `createInterpreter` with `isolation: "process"` can honour it.
+  if ("timeoutMs" in runtime) {
+    throw new TypeError(
+      "timeoutMs is not supported for imported .php modules; a module call has no deadline. " +
+        'Use createInterpreter with isolation: "process", or race a timer yourself.',
+    );
+  }
 
   // Everything that decides which interpreter to boot; `loader` and `spawn` are compared by identity.
   const { loader, spawn, ...serialisable } = runtime;
@@ -222,12 +214,12 @@ export function createPhpModule(options: CreatePhpModuleOptions): PhpModuleApi {
 
   return {
     // Every PHP function on the default export too. Spread defines own properties, so a PHP
-    // function named `toString` shadows Object.prototype instead of being skipped. `call` is
-    // listed after the spread on purpose: the API owns that name, and the sidecar says so.
+    // function named `toString` shadows Object.prototype instead of being skipped. The API members
+    // come after it and all start with `$`, which no PHP function name can.
     ...Object.fromEntries(
       Object.keys(functions).map((name) => [name, (...args: unknown[]) => call(name, args)]),
     ),
-    call,
+    $call: call,
     $ready: async () => {
       await instance.php();
     },

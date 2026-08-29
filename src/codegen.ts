@@ -34,18 +34,6 @@ export function exportLines(
   return [declare(binding), `export { ${binding} as ${JSON.stringify(name)} };`];
 }
 
-/**
- * The only API name a PHP function can collide with on the default export; the rest are `$`-prefixed,
- * and a PHP function name cannot start with `$`.
- */
-export const API_NAME = "call";
-
-/** The trailer for the one function the default export cannot carry, which is still a named export. */
-export function apiOnlyLines(meta: PhpModuleMeta): string[] {
-  if (!meta.functions.some((fn) => fn.exportName === API_NAME)) return [];
-  return ["", `// Named export only (the module API owns \`${API_NAME}\` on the default export):`];
-}
-
 /** The trailer both generated files end with. */
 export function skippedLines(meta: PhpModuleMeta): string[] {
   if (meta.skipped.length === 0) return [];
@@ -103,7 +91,7 @@ export function generateModule(options: CodegenOptions): string {
   ];
 
   for (const fn of meta.functions) {
-    const call = `(...args) => __mod.call(${JSON.stringify(fn.exportName)}, args);`;
+    const call = `(...args) => __mod.$call(${JSON.stringify(fn.exportName)}, args);`;
     lines.push(
       ...exportLines(fn.exportName, "function", (binding) => `const ${binding} = ${call}`),
     );
@@ -117,5 +105,5 @@ export function generateModule(options: CodegenOptions): string {
     );
   }
 
-  return [...lines, ...apiOnlyLines(meta), ...skippedLines(meta)].join("\n") + "\n";
+  return [...lines, ...skippedLines(meta)].join("\n") + "\n";
 }

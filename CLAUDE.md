@@ -59,7 +59,7 @@ function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, dec
 | `src/plugin.ts`                                | `onLoad` hook, option defaults, sidecar writing                                                      |
 | `src/register.ts`                              | Side-effecting `plugin(phpPlugin())` for `preload`                                                   |
 | `src/parse.ts`                                 | php-parser AST → `PhpModuleMeta` (functions, constants, skip notes)                                  |
-| `src/php-types.ts`                             | PHP type hints and docblock types → TypeScript type expressions                                      |
+| `src/php-types.ts`                             | PHP type declarations → TypeScript type expressions                                                  |
 | `src/codegen.ts`                               | Emits the JS module; owns the aliasing helpers (`bindingNameFor`, `exportLines`) dts.ts shares       |
 | `src/dts.ts`                                   | Emits the `.d.ts` sidecar                                                                            |
 | `src/runtime.ts`                               | `PhpInstance` (a `PhpInterpreter` plus call streaming, stdout modes, the `--hot` cache) and `$`-API  |
@@ -67,7 +67,7 @@ function. At call time: `runtime.ts` → `marshal.ts` (build the PHP script, dec
 | `src/marshal.ts`                               | The JS ⇄ PHP call protocol                                                                           |
 | `src/project.ts`                               | Walks up from a `.php` file to find its Composer root and autoloader                                 |
 | `src/php-runtime.ts`                           | The only module that _calls_ `@php-wasm/*`: version→build map, `bootPhp`, journal ops, mount handler |
-| `src/interpreter.ts`                           | `PhpInterpreter` — lazy boot, journal, `cli()`, timeouts, and the `isolation: "process"` dispatch    |
+| `src/interpreter.ts`                           | `PhpInterpreter` — lazy boot, journal, `cli()`, and the `isolation: "process"` dispatch              |
 | `src/isolation.ts` + `src/isolation-runner.ts` | `isolation: "process"` — parent spawn/timeout half and the child entrypoint                          |
 | `src/types.ts`                                 | Every public type, so no module imports another in a cycle                                           |
 | `types/php.d.ts`                               | Fallback `*.php` module declaration for users not generating sidecars                                |
@@ -125,20 +125,20 @@ recording first would run the op twice) and pushes only after `applyOp` resolves
 `mount()` that rejected still replayed onto every later boot: the caller was told it failed while it broke
 every subsequent `cli()` with an opaque error.
 
-**In-process `timeoutMs` bounds waiting, wherever it is set.** `withDeadline` in `interpreter.ts` is the
-one implementation: `PhpInterpreter` uses it for `cli()` and sets `retired`, and `PhpInstance.run` uses it
-for module calls, where there is no flag to set and later calls simply queue behind the abandoned request.
-A module's `timeoutMs` used to be accepted, documented and silently ignored. Both arm the deadline _after_
-`php()` resolves, so a cold call does not spend its budget on a boot the caller cannot influence — only
-`isolation: "process"` counts startup, because a spawned child gives no point to start the clock later.
-That is the same reason `killedByDeadline` in `isolation.ts` requires a `signalCode`: a timer firing as the
-child exits kills a corpse and would otherwise discard the complete reply it left in stdout. `PhpInstance`
-keeps the request in `#running` after the deadline rejects, so a later `$reset()` still drains the PHP that
-is genuinely still executing.
+**`timeoutMs` exists only under `isolation: "process"`.** There is no in-process deadline anywhere:
+php-wasm cannot interrupt a running request, so a timer could only reject the caller's promise while the
+PHP burned on, and that was worse than nothing (see the measurements below). `PhpInterpreter.cli()` reads
+`timeoutMs` inside the isolation branch and nowhere else, and it is off both `PhpModuleRuntimeOptions` and
+`CreatePhpModuleOptions["runtime"]` — a module's `timeoutMs` was once accepted, documented and silently
+ignored, so `assertSerialisable` in `plugin.ts` now rejects it rather than letting that return.
+A caller who only wants to stop waiting races a timer themselves; say so wherever it comes up.
+`killedByDeadline` in `isolation.ts` requires a `signalCode` before it blames the deadline: a timer firing
+as the child exits kills a corpse and would otherwise discard the complete reply it left in stdout.
+`PhpInstance` still tracks every call in `#running`, not to survive a deadline but so `$reset()` and
+`$dispose()` can drain in-flight work before exiting the runtime under it.
 
 **A rejected boot is not cached.** `php()` clears `#instance` when `bootPhp` rejects, so a transient
-failure does not replay on every later call until `$reset()`. `dispose()` clears `retired` for the same
-reason: the replacement instance is nobody's abandoned request.
+failure does not replay on every later call until `$reset()`.
 
 **`$reset()` and `$dispose()` are lazy.** Both wait for in-flight calls (`#running`), then `dispose()` the
 interpreter; `reset()` clears the captured buffer _after_ that drain, or a call finishing during it refills
@@ -198,28 +198,25 @@ The cost is that a template's `\n` is now PHP's escape rather than JavaScript's;
 
 **Inline snippets interpolate as expressions, not text.** `src/inline.ts` runs every interpolated value
 through `encodeValue()` from `marshal.ts`, so a value can never be executed as code; `test/inline.test.ts`
-asserts that with real injection payloads. `asClosureBody` strips a leading open tag (the snippet is
-evaluated inside a closure) and re-enters PHP mode when a snippet ends in markup, or the wrapper's closing
-brace becomes literal text. Which tags are real is decided by `scanMode`, which runs php-parser's lexer
-(`tokenGetAll`), not `includes`/`lastIndexOf`: a `<?` or `?>` inside a string literal, heredoc/nowdoc or
-block comment is not a tag, while one inside a `//`/`#` line comment _is_ a real close, exactly as PHP reads
-it. `tokenGetAll` has no eval mode (the `mode_eval` lexer option does not reach it), so the snippet gets a
-`<?php ` prefix to start the lexer in code mode, and a `<` token immediately followed by `?` is what marks a
-snippet that meant to open with markup — no valid PHP puts those two adjacent. That makes `inline.ts` the
-second consumer of php-parser after `parse.ts`; do not hand-roll the scan back. `asClosureBody` is exported
-so `test/inline.test.ts` can unit-test the rules without booting wasm, and its one `OPEN_TAG` pattern does
-both the test and the strip so the two cannot disagree.
+asserts that with real injection payloads. **A snippet is code, not a template.** It is evaluated inside a
+closure, which already starts in code mode, so `asClosureBody` only sheds the tags a PHP _file_ would need:
+a leading `<?php` is dropped, a leading `<?=` becomes `echo `, and a trailing `?>` becomes `;`, which is
+what keeps `<?= 6 * 7 ?>` valid once its tag is gone. Everything else is left for PHP's own lexer to
+judge — a `?>` in a string, a comment or a heredoc, and every mid-snippet tag. Markup is not supported: a
+snippet that starts or ends in HTML reaches PHP as code and fails with PHP's own parse error, and a bare
+`<?` is untouched (short tags are pinned off) so PHP rejects that too. `asClosureBody` is exported so
+`test/inline.test.ts` can unit-test both rules without booting wasm.
 
 **Aliasing has one source of truth.** `bindingNameFor` (exported from `codegen.ts`) decides the local binding
 for a PHP name, and `exportLines` turns that into either a direct export or an alias plus re-export;
 `codegen.ts`, `dts.ts` and the uniqueness guard in `parse.ts` all go through them so they cannot drift.
 `parse.ts` also reserves the generated module's own identifiers (`__mod`, `createPhpModule`, `_default`,
 `default`), skipping any PHP name that would collide — `define()` accepts names a `const` declaration cannot.
-Separately, `API_NAME` in `codegen.ts` is the one name (`call`) a PHP function shares with the module
-API: the function stays a named export, but `dts.ts` leaves it off the `_default` block and both
-generators emit a "Named export only" trailer, because a second `call` key is a TS2717 and at runtime the
-API wins anyway — which is why `createPhpModule` lists `call` _after_ the function spread. Every other API
-member is `$`-prefixed and a PHP function name cannot start with `$`, so `call` is the whole list.
+Every module-API member is `$`-prefixed and a PHP function name cannot start with `$`, so no PHP function
+can collide with the API: `createPhpModule` spreads the functions first and adds the `$` members after, and
+every function fits on the default export with no special case. The API's `call` was renamed `$call` to
+make that true — it was the one un-prefixed member, and it cost a name registry, a `dts.ts` skip and a
+"Named export only" trailer in both generators.
 A constant whose value JavaScript cannot reproduce faithfully is `NOT_LITERAL` rather than a guess: an
 array key past 2^53 (rounding it collides two entries or restarts the implicit key at zero), and an
 implicit key following a negative one, which PHP 8.3 resumes at `-4` where 8.0-8.2 restart at `0` — the
@@ -230,19 +227,33 @@ is a genuinely different function and stays ignored.
 `arguments`/`eval`), not PHP's keyword list: `define()` can hand codegen any name at all. Beware that Bun's
 transpiler tolerates the strict-mode-only subset (`implements`…`yield`) while its module loader rejects them,
 so `Bun.Transpiler` alone is not proof a generated module loads — `test/e2e.test.ts` imports a `yield`
-constant through the real loader for exactly that reason. Generated `.d.ts` output must stay byte-identical
-across refactors: `example/hello.php.d.ts` and `demos/php/*.php.d.ts` are committed.
+constant through the real loader for exactly that reason. `example/hello.php.d.ts` is the only committed
+sidecar, so a refactor that changes it has changed generated output for everyone: regenerate it by
+running the example rather than hand-editing, and make sure the diff is one you meant.
 
-**Type-mapping changes** go in `TS_TYPES` in `php-types.ts` (declared keywords and docblock-only spellings
-share the one map; `convertDocPart` handles the docblock syntax around them). The precedence rule lives in
-`chooseType` in `parse.ts`: a real type declaration wins, _except_ that bare `array` and `mixed` defer to a
-`@param`/`@return` docblock tag.
+**Type-mapping changes** go in `TS_TYPES` in `php-types.ts`, which mirrors php-parser's own
+`TypeReference.types` list — nothing else can reach it, since docblock tags are not read. A name outside
+that list never reaches the map at all: a class name arrives as a `name` node and becomes
+`Record<string, unknown>`, while `self` and `parent` get their own node kinds (`selfreference`,
+`parentreference`) and fall to the `any` default — which is why dropping the `self` key was safe, and
+why `static`, which really is a `typereference`, had to stay. Lookup goes through `tsType`, whose
+`Object.hasOwn` is belt-and-braces: php-parser only mints `typereference` for those 15 names, so a
+type spelled `constructor` cannot reach it today, but the map is a plain object literal.
+All that is left of the old precedence rule is `declaredType` in `parse.ts`: the declaration, with `?T`
+folding its null through `nullable`. `members` splits a converted type at bracket depth 0 and is what
+`union`, `nullable` and `parenthesised` all agree on, so a `|` or a `null` nested inside brackets is not
+mistaken for a top-level one. Docblocks are still read, but only for the summary: `docSummary` in
+`parse.ts` stops at the first `@tag` and the rest becomes the function's JSDoc.
 
 **The plugin's `runtime` option is the serialisable half of `PhpRuntimeOptions`.** It is emitted into the
 generated module by `generateModule`, so `PhpModuleRuntimeOptions` drops `loader` and function-valued
-`spawn` (neither survives `JSON.stringify`) and `isolation` (which `createPhpModule` refuses outright);
-`assertSerialisable` in `plugin.ts` repeats that check for JavaScript callers. The key is omitted entirely
-when unset, so a module without runtime options generates byte-identically to before.
+`spawn` (neither survives `JSON.stringify`) and `isolation` (which `createPhpModule` refuses outright).
+It also drops `timeoutMs`, for a different reason: a module call has no deadline, so carrying it would be
+dead configuration. `assertSerialisable` in `plugin.ts` repeats all of that for JavaScript callers, and
+`createPhpModule` throws for `timeoutMs` beside its existing `isolation` guard, because the type-level
+`Omit` alone left the direct caller free to pass one in JavaScript and have it quietly do nothing. The
+key is omitted entirely when unset, so a module without runtime options generates byte-identically to
+before.
 
 **PHP version selection lives in `BUILD_PACKAGES` in `php-runtime.ts`**, a map from version to
 `@php-wasm/node-X-Y` resolved with a dynamic `import()`. `buildImportError` classifies a failed import
@@ -277,9 +288,10 @@ whose three `skipIf(isBuildInstalled("8.1"))` tests still assume 8.1 is absent i
 **Neither timeouts nor parallelism work the way you would assume in-process**, both measured:
 
 - A running request cannot be interrupted. `PHP.exit()` mid-call returns without stopping it (a busy loop then
-  ran to completion), and `max_execution_time` is ignored — a 2s limit let an 8s loop finish. So in-process
-  `timeoutMs` bounds _waiting_ only: it rejects and flags the interpreter `retired` while the PHP keeps burning
-  CPU. Say so wherever it is documented; a timeout that implies cancellation is worse than none.
+  ran to completion), and `max_execution_time` is ignored — a 2s limit let an 8s loop finish. That is why
+  there is no in-process `timeoutMs` at all: a deadline that could only reject the caller's promise while the
+  PHP kept burning CPU bought nothing, so callers who want to stop waiting `Promise.race` a timer themselves.
+  Say so wherever it is documented; a timeout that implies cancellation is worse than none.
 - Interpreters do not overlap. Two concurrent 1s calls on two instances take ~2s (ratio 1.96), because the
   wasm holds the thread. That is why there is no pool API — a second interpreter in-process buys nothing, and
   `test/interpreter.test.ts` pins the ratio so nobody adds one on a hunch.
@@ -288,7 +300,7 @@ whose three `skipIf(isBuildInstalled("8.1"))` tests still assume 8.1 is absent i
 retains hundreds of MB across in-process boot/dispose cycles (35 MB baseline → 300–800 MB after a handful,
 forced GC included) and the OS reclaiming an exited child is the only thing that returns it. Each `cli()`
 spawns `src/isolation-runner.ts`, ships `{ options: { phpVersion, spawn }, journal, argv }` as JSON on stdin,
-and SIGKILLs on timeout — so under isolation `timeoutMs` really cancels, concurrent calls really overlap
+and SIGKILLs on timeout — so `timeoutMs` exists here and nowhere else, concurrent calls really overlap
 (1.04x measured), and a wasm abort takes only the child. The constructor rejects `loader` and function-valued
 `spawn` up front because they cannot cross the JSON boundary, `php()` throws for the same reason, and
 `createPhpModule` refuses `runtime.isolation` outright — the imported-module path runs many small calls
@@ -320,3 +332,15 @@ no comment to an obvious one.
 Default to Bun over Node.js: `bun <file>`, `bun test`, `bun install`, `bun run <script>`, `bunx <pkg>`.
 Prefer `Bun.file`/`Bun.write` over `node:fs` (test helpers use `node:fs/promises` for tmpdir work, which is
 fine). Bun loads `.env` automatically — no dotenv. Bun API docs are in `node_modules/bun-types/docs/**.mdx`.
+
+## Pull requests
+
+release-please cuts releases from what lands on `main`, and this repo squash-merges with
+`COMMIT_OR_PR_TITLE` — so on a branch with more than one commit **the PR title becomes the release
+commit's subject**. It has to be a conventional commit (`feat:`, `fix:`, `docs:`, …): a title with no type
+is not parsed at all and ships no release. A breaking change is a `!` after the type (`feat!:`), and that
+is what bumps the major — the `BREAKING CHANGE:` footer alone will not do it if the subject never parses.
+
+Keep PR descriptions brief and concise: a sentence on what and why, a short bullet per change, and a
+`BREAKING CHANGE` list when there is one. The commits and the diff carry the detail; do not restate them
+at length.

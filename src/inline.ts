@@ -1,4 +1,3 @@
-import { Engine } from "php-parser";
 import { encodeValue } from "./marshal";
 import { createPhpModule } from "./runtime";
 import type { PhpModuleApi } from "./types";
@@ -36,56 +35,21 @@ function fillTemplate(strings: TemplateStringsArray, values: unknown[]): string 
   return code;
 }
 
-/** php-parser names multi-character tokens; a single-character token is just that character. */
-function tokenName(token: string | string[]): string {
-  return typeof token === "string" ? token : (token[0] as string);
-}
+// `<?PHP` is as valid as `<?php`; a bare `<?` is not a tag, because short tags are pinned off.
+const OPEN_TAG = /^\s*<\?(php\b|=)/i;
+const CLOSE_TAG = /\?>\s*$/;
 
 /**
- * Where the snippet leaves the parser when read as code, and whether an open tag turns up before any
- * code ran — a snippet that meant to start in markup. PHP's own lexer decides which `<?` and `?>` are
- * tags, so ones inside string literals, heredocs and comments cannot fool it. `tokenGetAll` has no
- * eval mode, so the `<?php ` prefix is what starts it in code mode.
- */
-function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
-  // The Engine constructor mutates its options object, so build a fresh one each time.
-  const engine = new Engine({ parser: { suppressErrors: true, version: 805 } });
-  const tokens = engine.tokenGetAll(`<?php ${code}`) as (string | string[])[];
-
-  let inCode = true;
-  let markupFirst = false;
-  for (let i = 0; i < tokens.length; i++) {
-    const name = tokenName(tokens[i]!);
-    if (name === "T_OPEN_TAG" || name === "T_OPEN_TAG_WITH_ECHO") inCode = true;
-    else if (name === "T_CLOSE_TAG" || name === "T_INLINE_HTML") inCode = false;
-    // Never a tag in code mode, but nothing else puts `<?` there: the snippet opened with markup.
-    else if (inCode && name === "<" && tokenName(tokens[i + 1] ?? "") === "?") markupFirst = true;
-  }
-
-  return { markupFirst, endsInCode: inCode };
-}
-
-/**
- * A snippet runs inside a closure, which starts in code mode, whereas a PHP file starts in markup
- * mode. So a leading open tag is dropped (`<?=` becomes `echo`), leading markup before a later tag is
- * kept by prefixing `?>`, no tags at all means code, and a snippet ending in markup re-enters code
- * mode so the wrapper's closing brace is not swallowed as text. PHP drops the one newline after `?>`,
- * so that re-entry prints nothing.
+ * A snippet runs inside a closure, which starts in code mode, so the tags a PHP file needs are
+ * stripped rather than honoured: a leading `<?php` is dropped, `<?=` becomes `echo`, and a trailing
+ * `?>` becomes `;` (it doubles as a statement terminator, so `<?= 6 * 7 ?>` stays valid without it).
+ * Everything in between is code — inline markup is not supported, and a snippet that starts or ends
+ * in markup fails with PHP's own parse error.
  */
 export function asClosureBody(code: string): string {
-  // One pattern for both the test and the strip, so they cannot disagree. `<?PHP` is as valid as
-  // `<?php`; a bare `<?` is not a tag at all, because short tags are pinned off.
-  const OPEN_TAG = /^\s*<\?(php\b|=)/i;
-
-  let body = code;
-  if (OPEN_TAG.test(code)) {
-    body = code.replace(OPEN_TAG, (tag) => (tag.endsWith("=") ? "echo " : ""));
-  } else if (scanMode(code).markupFirst) {
-    body = `?>${code}`;
-  }
-  // A leading `?>` is the first token the lexer sees, so every branch can be read from code mode.
-  if (!scanMode(body).endsInCode) body += "\n<?php ";
-  return body;
+  return code
+    .replace(OPEN_TAG, (tag) => (tag.endsWith("=") ? "echo " : ""))
+    .replace(CLOSE_TAG, ";");
 }
 
 async function evaluate(

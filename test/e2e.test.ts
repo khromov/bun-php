@@ -108,7 +108,7 @@ describe("constants", () => {
 
 describe("reserved words", () => {
   test("a PHP function named `delete` is importable under an alias", async () => {
-    expect(await reserved.call("delete", ["file"])).toBe("deleted file");
+    expect(await reserved.$call("delete", ["file"])).toBe("deleted file");
   });
 
   test("and is reachable on the default export", async () => {
@@ -139,22 +139,22 @@ describe("errors", () => {
     }
   });
 
-  test("call() does not reach Object.prototype", async () => {
+  test("$call() does not reach Object.prototype", async () => {
     // `functions.constructor` would otherwise template-stringify a native function into the PHP
     // source, so the error blamed `function Object() { [native code] }` instead of the name asked for.
     for (const name of ["constructor", "hasOwnProperty", "valueOf"]) {
-      const error = await php.call(name, []).catch((err: unknown) => err as Error);
+      const error = await php.$call(name, []).catch((err: unknown) => err as Error);
       expect(error).toBeInstanceOf(Error);
       expect(error.message).not.toContain("[native code]");
       expect(error.message).toContain(`Call to undefined function ${name}()`);
     }
 
     // A PHP function that really is named after a prototype member still resolves.
-    expect(await php.call("toString", [])).toBe("shadowed the prototype");
+    expect(await php.$call("toString", [])).toBe("shadowed the prototype");
   });
 
   test("calling an undefined function rejects", async () => {
-    await expect(php.call("no_such_function", [])).rejects.toThrow(/no_such_function/);
+    await expect(php.$call("no_such_function", [])).rejects.toThrow(/no_such_function/);
   });
 
   test("exit() becomes a PhpFatalError rather than hanging", async () => {

@@ -1,5 +1,4 @@
 import type { PHP } from "@php-wasm/universal";
-import { PhpTimeoutError } from "./errors";
 import { runIsolatedCli, type IsolationRequest } from "./isolation";
 import { applyOp, bootPhp, optionOps, withoutPinned, writeFileOp } from "./php-runtime";
 import type { JournalOp, PhpCliOptions, PhpCliResult, PhpRuntimeOptions } from "./types";
@@ -11,7 +10,6 @@ import type { JournalOp, PhpCliOptions, PhpCliResult, PhpRuntimeOptions } from "
 export class PhpInterpreter {
   /** The booted (or booting) instance; `null` once `cli()` has taken it. */
   #instance: Promise<PHP> | null = null;
-  #retired = false;
   readonly #journal: JournalOp[];
 
   constructor(
@@ -53,11 +51,6 @@ export class PhpInterpreter {
     return attempt;
   }
 
-  /** Whether an in-process call timed out here; the abandoned request still owns that instance. */
-  get retired(): boolean {
-    return this.#retired;
-  }
-
   mount(host: string, at: string): Promise<void> {
     return this.#apply({ kind: "mount", host, at });
   }
@@ -92,17 +85,14 @@ export class PhpInterpreter {
 
   /** Run PHP as `php script.php --flag` would; `argv[0]` is the binary name. Output is buffered whole. */
   async cli(argv: string[], options: PhpCliOptions = {}): Promise<PhpCliResult> {
-    const timeoutMs = options.timeoutMs ?? this.options.timeoutMs ?? 0;
     if (this.options.isolation === "process") {
+      // The only deadline bun-php offers: a SIGKILL on the child. In-process a running request
+      // cannot be interrupted, so there is no in-process deadline — `Promise.race` a timer yourself
+      // if you only want to stop waiting.
+      const timeoutMs = options.timeoutMs ?? this.options.timeoutMs ?? 0;
       return runIsolatedCli(this.#isolationRequest(argv, options), timeoutMs);
     }
-    // Taken before `#cli` consumes it, so the clock can start once the boot is done rather than
-    // charging the caller for wasm startup they cannot influence — as `PhpInstance.run` already does.
-    const booted = this.php();
-    const run = this.#cli(argv, options);
-    if (timeoutMs <= 0) return run;
-    await booted.catch(() => {});
-    return this.#deadline(run, timeoutMs);
+    return this.#cli(argv, options);
   }
 
   #isolationRequest(argv: string[], options: PhpCliOptions): IsolationRequest {
@@ -132,50 +122,15 @@ export class PhpInterpreter {
     return { stdout, stderr, exitCode };
   }
 
-  // php-wasm cannot interrupt a request, so this bounds waiting only; the abandoned request keeps running.
-  #deadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-    return withDeadline(work, timeoutMs, () => {
-      this.#retired = true;
-      return new PhpTimeoutError(
-        `PHP call exceeded ${timeoutMs}ms; the request is still running and this interpreter is retired`,
-        timeoutMs,
-      );
-    });
-  }
-
   /** Shut down; a disposed interpreter re-boots on next use. */
   async dispose(): Promise<void> {
     const instance = this.#instance;
     this.#instance = null;
-    // The replacement is nobody's abandoned request, so the flag goes with the instance it described.
-    this.#retired = false;
     const php = await instance?.catch(() => null);
     // A runtime that is already exiting throws here, and `createPhpModule` discards this promise.
     try {
       php?.exit();
     } catch {}
-  }
-}
-
-/**
- * Bound the wait, not the work: php-wasm cannot interrupt a running request, so it keeps going after
- * this rejects. `expired` builds the error and takes whatever note the caller keeps of the timeout.
- */
-export async function withDeadline<T>(
-  work: Promise<T>,
-  timeoutMs: number,
-  expired: () => PhpTimeoutError,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expiry = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(expired()), timeoutMs);
-  });
-  // The loser settling later must not surface as an unhandled rejection.
-  void work.catch(() => {});
-  try {
-    return await Promise.race([work, expiry]);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

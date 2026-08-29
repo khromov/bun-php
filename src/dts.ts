@@ -1,11 +1,4 @@
-import {
-  API_NAME,
-  apiOnlyLines,
-  bindingNameFor,
-  exportLines,
-  isBindableIdentifier,
-  skippedLines,
-} from "./codegen";
+import { bindingNameFor, exportLines, isBindableIdentifier, skippedLines } from "./codegen";
 import { parenthesised } from "./php-types";
 import type { PhpFunctionMeta, PhpModuleMeta, PhpValue } from "./types";
 
@@ -38,8 +31,8 @@ export function generateDts(meta: PhpModuleMeta, sourceName: string): string {
       ...exportLines(fn.exportName, "function", (b) => `declare function ${b}${signature};`),
       "",
     );
-    // The API's own `call(name, args)` already holds this key, and a duplicate would not typecheck.
-    if (fn.exportName === API_NAME) continue;
+    // The API members are all `$`-prefixed, which no PHP function name can be, so every function
+    // fits on the default export.
     const binding = bindingNameFor(fn.exportName, "function");
     const key = binding === fn.exportName ? binding : JSON.stringify(fn.exportName);
     onDefault.push(`  ${key}: typeof ${binding};`);
@@ -54,7 +47,7 @@ export function generateDts(meta: PhpModuleMeta, sourceName: string): string {
   lines.push(
     "declare const _default: {",
     "  /** Call a PHP function by its fully-qualified name. */",
-    "  call(name: string, args: readonly unknown[]): Promise<any>;",
+    "  $call(name: string, args: readonly unknown[]): Promise<any>;",
     "  /** Boot the interpreter without calling anything. */",
     "  $ready(): Promise<void>;",
     "  /** Discard all PHP state; the next call boots a fresh interpreter. */",
@@ -78,7 +71,7 @@ export function generateDts(meta: PhpModuleMeta, sourceName: string): string {
     "export default _default;",
   );
 
-  return [...lines, ...apiOnlyLines(meta), ...skippedLines(meta)].join("\n") + "\n";
+  return [...lines, ...skippedLines(meta)].join("\n") + "\n";
 }
 
 function renderParams(fn: PhpFunctionMeta): string {

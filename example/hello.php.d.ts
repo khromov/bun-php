@@ -23,7 +23,7 @@ export declare function addAll(...numbers: number[]): Promise<number>;
 /**
  * Summarises a list of numbers.
  */
-export declare function stats(values: number[]): Promise<Record<string, number>>;
+export declare function stats(values: PhpArray): Promise<PhpArray>;
 
 /**
  * Formats a number the way PHP's intl-free number_format does.
@@ -34,7 +34,7 @@ export declare const GREETING: "Hello";
 
 declare const _default: {
   /** Call a PHP function by its fully-qualified name. */
-  call(name: string, args: readonly unknown[]): Promise<any>;
+  $call(name: string, args: readonly unknown[]): Promise<any>;
   /** Boot the interpreter without calling anything. */
   $ready(): Promise<void>;
   /** Discard all PHP state; the next call boots a fresh interpreter. */

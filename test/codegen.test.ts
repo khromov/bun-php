@@ -45,7 +45,7 @@ describe("isBindableIdentifier", () => {
 describe("generated module", () => {
   test("exports each function as a named binding", () => {
     const { js } = build(`function greet(string $n): string {}`);
-    expect(js).toContain(`export const greet = (...args) => __mod.call("greet", args);`);
+    expect(js).toContain(`export const greet = (...args) => __mod.$call("greet", args);`);
   });
 
   test("inlines the source and the function name map", () => {
@@ -131,6 +131,13 @@ describe("generated .d.ts", () => {
     expect(dts).toContain("...rest: (number | string)[]");
   });
 
+  test("a union member carrying its own brackets is still one member", () => {
+    // A class name converts to `Record<string, unknown>`, so a union member carries brackets of its
+    // own; `parenthesised` still has to see two members and wrap the whole union before `[]` binds.
+    const { dts } = build(`function f(\\App\\Thing|int ...$rest): int {}`);
+    expect(dts).toContain("...rest: (Record<string, unknown> | number)[]");
+  });
+
   test("carries the docblock summary into JSDoc", () => {
     const { dts } = build(`/** Greets someone. */ function greet(): string {}`);
     expect(dts).toContain("* Greets someone.");
@@ -181,21 +188,19 @@ describe("generated .d.ts", () => {
     expect(() => new Bun.Transpiler({ loader: "js" }).transformSync(js)).not.toThrow();
   });
 
-  test("a PHP function named call stays a named export only", () => {
-    // The API's own `call(name, args)` holds that key; a second one is TS2717, and at runtime the
-    // API wins anyway, so the default export must not claim to carry the PHP function.
+  test("a PHP function named call is an ordinary export, on the default export too", () => {
+    // The module API is entirely `$`-prefixed ($call and friends), which no PHP function name can
+    // be, so `call` collides with nothing.
     const { dts, js } = build(`function call(string $a): string {}`);
     expect(dts).toContain("export declare function call(a: string): Promise<string>;");
-    expect(dts).not.toContain("call: typeof call;");
-    expect(dts).toContain(
-      "// Named export only (the module API owns `call` on the default export):",
-    );
-    expect(js).toContain("export const call = (...args) =>");
+    expect(dts).toContain("call: typeof call;");
+    expect(js).toContain(`export const call = (...args) => __mod.$call("call", args);`);
   });
 
   test("types the default export the way PhpModuleApi does", () => {
     // A .php import resolves to the sidecar, so anything missing here is untypeable for the caller.
     const { dts } = build(`function f(): void {}`);
+    expect(dts).toContain("$call(name: string, args: readonly unknown[]): Promise<any>;");
     expect(dts).toContain("$eval(code: string, onOutput?: (text: string) => void): Promise<any>;");
     // $reset is lazy: it discards state and lets the *next* call pay for the boot.
     expect(dts).toContain("/** Discard all PHP state; the next call boots a fresh interpreter. */");
