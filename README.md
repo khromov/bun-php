@@ -412,8 +412,11 @@ wasm abort takes only its own child.
 - **Values cross by JSON.** Integers beyond `Number.MAX_SAFE_INTEGER` lose precision; resources and closures
   can't be returned; objects arrive as their public properties. `NaN` and `Infinity` cross as whole
   arguments only — nested in an array or object they throw rather than silently arriving as `null`.
-  Nested `undefined` follows JSON instead: `null` in an array, and a dropped key in an object. Only a
-  whole argument that is `undefined` is an error. PHP list arrays become JS arrays,
+  Strings must be well-formed UTF-16: a lone surrogate anywhere, including in an object key, is refused,
+  because PHP's `json_decode` would reject the whole argument and hand PHP `null`. Surrogate pairs, and so
+  emoji, are unaffected. Nested `undefined` follows JSON instead: `null` in an array, and a dropped key in
+  an object. A whole argument that is `undefined`, a function or a symbol is an error, for the same reason:
+  it would otherwise arrive as `null`. PHP list arrays become JS arrays,
   associative arrays become objects, and JS objects arrive in PHP as associative arrays (not `stdClass`).
 - **By-reference parameters (`&$x`) don't write back.** Arguments pass by value; the generated types carry a
   JSDoc warning.

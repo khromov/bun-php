@@ -261,6 +261,16 @@ describe("docblocks", () => {
 });
 
 describe("docblock unions", () => {
+  test("a type named like an Object prototype member is still a class name", () => {
+    // `TS_TYPES[name]` found `Object.prototype` for `__proto__` and `toString`, so the mapper
+    // returned an object where every caller expected a type string.
+    const meta = parsePhp(
+      "<?php\n/** @return __proto__ */\nfunction f() { return 1; }\n",
+      "/virtual/proto.php",
+    );
+    expect(meta.functions[0]!.returnTsType).toBe("Record<string, unknown>");
+  });
+
   test("an alias that expands to several members is deduped by member", () => {
     // `scalar` is three types; deduping whole parts left `string | number | boolean | string`.
     expect(fn(`/** @param scalar|string $a */ function f($a) {}`).params[0]!.tsType).toBe(
@@ -281,6 +291,20 @@ describe("docblock unions", () => {
     expect(fn(`/** @param (int|string)[] $a */ function f($a) {}`).params[0]!.tsType).toBe(
       "(number | string)[]",
     );
+  });
+
+  test("a null nested inside a generic does not stand in for the parameter's own", () => {
+    // `?array` plus a documented `Record<..., int | null | Foo>` split naively into members and
+    // found that inner `null`, so the parameter lost the `| null` it had actually declared.
+    expect(
+      fn(`/** @param array<string, int|null|Foo> $a */ function f(?array $a) {}`).params[0]!.tsType,
+    ).toBe("Record<string, number | null | Record<string, unknown>> | null");
+  });
+
+  test("a generic holding a union needs no parentheses before `[]`", () => {
+    expect(
+      fn(`/** @param array<string, int|null>[] $a */ function f($a) {}`).params[0]!.tsType,
+    ).toBe("Record<string, number | null>[]");
   });
 });
 

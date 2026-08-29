@@ -201,6 +201,32 @@ EOT;`,
 
 /** Where the tag rules actually live; testing them here costs no interpreter boot. */
 describe("asClosureBody", () => {
+  test("a malformed attribute is left for PHP to report", () => {
+    // php-parser's `suppressErrors` covers the parser, not the lexer: `#[?` made it throw
+    // `Bad terminal sequence` out of the tag helper instead of reaching PHP at all.
+    expect(() => asClosureBody("#[?")).not.toThrow();
+    expect(asClosureBody("#[?")).toBe("#[?");
+  });
+
+  test("an unterminated attribute does not hang the lexer", () => {
+    // `#[` with no `]` and a newline after it puts php-parser's attribute lexer in an infinite
+    // loop, which is why the code is bracket-balanced before it is handed over.
+    for (const snippet of ["#[\n", "#[A\n", "#[[]\n", "#[;\n"]) {
+      expect(asClosureBody(snippet)).toBe(snippet);
+    }
+    // A closed attribute needs no padding and still lexes normally.
+    expect(asClosureBody("#[A]\nfunction f() {}")).toBe("#[A]\nfunction f() {}");
+  });
+
+  test("a `#[` that is not an attribute still leaves the snippet in markup mode", () => {
+    // The padding goes past the last token, so a `#[` in markup or a string cannot cost the
+    // snippet its `<?php` re-entry and hand the wrapper's closing brace to PHP as literal text.
+    expect(asClosureBody(`<?php echo "x"; ?>\n<p>#[1</p>\n`)).toBe(
+      ` echo "x"; ?>\n<p>#[1</p>\n\n<?php `,
+    );
+    expect(asClosureBody(`echo "#[";\n?>\n<p>x</p>`)).toBe(`echo "#[";\n?>\n<p>x</p>\n<?php `);
+  });
+
   test("drops a leading open tag and keeps code mode", () => {
     expect(asClosureBody(`<?php return 1;`)).toBe(` return 1;`);
     expect(asClosureBody(`<?= 6 * 7;`)).toBe(`echo  6 * 7;`);

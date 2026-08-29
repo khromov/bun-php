@@ -55,6 +55,7 @@
   "devDependencies": {
     "@php-wasm/node-8-3": "^3.1.51",
     "@types/bun": "latest",
+    "fast-check": "^4.9.0",
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0"
   },

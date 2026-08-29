@@ -90,6 +90,48 @@ describe("encodeValue", () => {
     );
   });
 
+  test("a lone surrogate is refused rather than nulling the whole argument", () => {
+    // PHP's json_decode rejects the escape `JSON.stringify` writes for it, so the value used to
+    // arrive as null in its entirety — the array, not just the string inside it.
+    const lone = "\ud800";
+    expect(() => encodeValue(lone, "f: argument #1")).toThrow(
+      "f: argument #1 holds a lone UTF-16 surrogate; PHP's json_decode rejects the whole argument, which would arrive as null",
+    );
+    expect(() => encodeValue(["ok", lone], "f: argument #1")).toThrow(
+      /lone UTF-16 surrogate at \[1\]/,
+    );
+    expect(() => encodeValue({ a: { b: lone } }, "f: argument #1")).toThrow(
+      /lone UTF-16 surrogate at \.a\.b/,
+    );
+  });
+
+  test("a bad object key is reported too, and printably", () => {
+    // The non-finite walk only ever looked at values, but a key nulls the document just the same.
+    expect(() => encodeValue({ "\ud800": 1 }, "f: argument #1")).toThrow(
+      'holds a lone UTF-16 surrogate at ["\\ud800"]',
+    );
+    expect(() => encodeValue({ a: { "\udfff": 1 } }, "f: argument #1")).toThrow('at .a["\\udfff"]');
+  });
+
+  test("a valid surrogate pair crosses, and the literal text does not trip the check", () => {
+    // Emoji are pairs, not lone surrogates; and `"C:\\ud800"` is data whose JSON *contains*
+    // `\ud800`, which is why the check walks the value rather than scanning the encoded JSON.
+    expect(() => encodeValue({ "\u{1f389}": "\u{1f600} ok" }, "f: argument #1")).not.toThrow();
+    expect(() => encodeValue({ p: "C:\\ud800\\x" }, "f: argument #1")).not.toThrow();
+  });
+
+  test("a whole argument that is a function or a symbol is refused", () => {
+    // `JSON.stringify` returns undefined for both, which phpVar base64s into an empty document.
+    expect(() => encodeValue(() => {}, "f: argument #1")).toThrow(
+      "f: argument #1 is a function; pass null instead",
+    );
+    expect(() => encodeValue(Symbol("x"), "f: argument #1")).toThrow(
+      "f: argument #1 is a symbol; pass null instead",
+    );
+    // Nested ones follow JSON, like nested undefined: dropped, not an error.
+    expect(() => encodeValue({ a: () => {} }, "f: argument #1")).not.toThrow();
+  });
+
   test("names the value in error messages", () => {
     expect(() => encodeValue(undefined, "BunPHP: interpolation #2")).toThrow(
       /BunPHP: interpolation #2 is undefined/,

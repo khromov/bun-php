@@ -258,6 +258,13 @@ describe("interpreter lifecycle", () => {
 });
 
 describe("known marshalling limits", () => {
+  test("a lone surrogate is refused before PHP is reached", async () => {
+    // roundTrip is typed `array $data`, so before the check this arrived as null and PHP answered
+    // with a confusing TypeError about the parameter rather than naming the real problem.
+    expect(await roundTrip({ ok: "\u{1f600}" })).toEqual({ ok: "\u{1f600}" });
+    await expect(roundTrip({ ok: "\ud800" })).rejects.toThrow(/lone UTF-16 surrogate/);
+  });
+
   test("PHP_INT_MAX loses precision through JSON, as documented", async () => {
     // 9223372036854775807 cannot be represented exactly as a JS number.
     expect(await bigInt()).toBe(9223372036854776000);

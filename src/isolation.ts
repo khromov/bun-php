@@ -68,10 +68,18 @@ const ERROR_TYPES: Record<
   },
 };
 
+/**
+ * The entry for an error name, if bun-php owns one. `Object.hasOwn` because an error named
+ * `valueOf` or `toString` otherwise finds `Object.prototype` and is treated as a known type.
+ */
+function errorType(name: string): (typeof ERROR_TYPES)[string] | undefined {
+  return Object.hasOwn(ERROR_TYPES, name) ? ERROR_TYPES[name] : undefined;
+}
+
 /** Flatten an error for the wire; only JSON survives the pipe to the parent. */
 export function serialiseError(err: unknown): IsolationFailure {
   if (!(err instanceof Error)) return { ok: false, name: "Error", error: String(err) };
-  const known = ERROR_TYPES[err.name];
+  const known = errorType(err.name);
   const fields = Object.fromEntries(
     (known?.fields ?? []).map((key) => [key, (err as unknown as Fields)[key]]),
   );
@@ -88,7 +96,7 @@ export function serialiseError(err: unknown): IsolationFailure {
 
 /** Rebuild what the child sent, keeping the class whenever bun-php owns it. */
 export function reviveError(failure: IsolationFailure): Error {
-  const known = ERROR_TYPES[failure.name];
+  const known = errorType(failure.name);
   if (!known) return new Error(`${failure.name}: ${failure.error}`);
   return known.build(failure.error, failure.fields ?? {}, failure.cause);
 }

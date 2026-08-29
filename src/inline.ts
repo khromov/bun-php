@@ -42,15 +42,40 @@ function tokenName(token: string | string[]): string {
 }
 
 /**
+ * The snippet with enough `]` appended to close every unmatched `[`. An unterminated `#[` attribute
+ * sends php-parser's attribute lexer into an infinite loop no `try` can catch, and a closing bracket
+ * is all it needs to terminate; the padding lands past the last token, where it can change neither
+ * `markupFirst` nor `endsInCode`.
+ */
+function bracketBalanced(code: string): string {
+  let open = 0;
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === "[") open++;
+    else if (code[i] === "]" && open > 0) open--;
+  }
+  return open > 0 ? code + "]".repeat(open) : code;
+}
+
+/**
  * Where the snippet leaves the parser when read as code, and whether an open tag turns up before any
  * code ran — a snippet that meant to start in markup. PHP's own lexer decides which `<?` and `?>` are
  * tags, so ones inside string literals, heredocs and comments cannot fool it. `tokenGetAll` has no
- * eval mode, so the `<?php ` prefix is what starts it in code mode.
+ * eval mode, so the `<?php ` prefix is what starts it in code mode. Exported so the property tests
+ * can state `asClosureBody`'s postcondition without booting wasm.
  */
-function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
+export function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
   // The Engine constructor mutates its options object, so build a fresh one each time.
   const engine = new Engine({ parser: { suppressErrors: true, version: 805 } });
-  const tokens = engine.tokenGetAll(`<?php ${code}`) as (string | string[])[];
+  let tokens: (string | string[])[];
+  try {
+    // Balanced first: an unterminated `#[` hangs the lexer, which no `try` below could catch.
+    tokens = engine.tokenGetAll(`<?php ${bracketBalanced(code)}`) as (string | string[])[];
+  } catch {
+    // `suppressErrors` covers the parser, not the lexer, which throws outright on a malformed
+    // attribute (`#[?`). Leaving the snippet alone is right for both: PHP's own error names the
+    // real problem, where a php-parser internal would not.
+    return { markupFirst: false, endsInCode: true };
+  }
 
   let inCode = true;
   let markupFirst = false;
