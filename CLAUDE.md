@@ -332,3 +332,15 @@ no comment to an obvious one.
 Default to Bun over Node.js: `bun <file>`, `bun test`, `bun install`, `bun run <script>`, `bunx <pkg>`.
 Prefer `Bun.file`/`Bun.write` over `node:fs` (test helpers use `node:fs/promises` for tmpdir work, which is
 fine). Bun loads `.env` automatically — no dotenv. Bun API docs are in `node_modules/bun-types/docs/**.mdx`.
+
+## Pull requests
+
+release-please cuts releases from what lands on `main`, and this repo squash-merges with
+`COMMIT_OR_PR_TITLE` — so on a branch with more than one commit **the PR title becomes the release
+commit's subject**. It has to be a conventional commit (`feat:`, `fix:`, `docs:`, …): a title with no type
+is not parsed at all and ships no release. A breaking change is a `!` after the type (`feat!:`), and that
+is what bumps the major — the `BREAKING CHANGE:` footer alone will not do it if the subject never parses.
+
+Keep PR descriptions brief and concise: a sentence on what and why, a short bullet per change, and a
+`BREAKING CHANGE` list when there is one. The commits and the diff carry the detail; do not restate them
+at length.
