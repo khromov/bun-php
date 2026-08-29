@@ -201,6 +201,23 @@ EOT;`,
 
 /** Where the tag rules actually live; testing them here costs no interpreter boot. */
 describe("asClosureBody", () => {
+  test("a malformed attribute is left for PHP to report", () => {
+    // php-parser's `suppressErrors` covers the parser, not the lexer: `#[?` made it throw
+    // `Bad terminal sequence` out of the tag helper instead of reaching PHP at all.
+    expect(() => asClosureBody("#[?")).not.toThrow();
+    expect(asClosureBody("#[?")).toBe("#[?");
+  });
+
+  test("an unterminated attribute does not hang the lexer", () => {
+    // `#[` with no `]` and a newline after it puts php-parser's attribute lexer in an infinite
+    // loop, so it has to be spotted before the lexer runs rather than caught afterwards.
+    for (const snippet of ["#[\n", "#[A\n", "#[[]\n", "#[;\n"]) {
+      expect(asClosureBody(snippet)).toBe(snippet);
+    }
+    // A closed attribute is untouched by the guard and still lexes normally.
+    expect(asClosureBody("#[A]\nfunction f() {}")).toBe("#[A]\nfunction f() {}");
+  });
+
   test("drops a leading open tag and keeps code mode", () => {
     expect(asClosureBody(`<?php return 1;`)).toBe(` return 1;`);
     expect(asClosureBody(`<?= 6 * 7;`)).toBe(`echo  6 * 7;`);

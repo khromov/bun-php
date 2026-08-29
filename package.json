@@ -33,8 +33,6 @@
   },
   "scripts": {
     "test": "bun test",
-    "test:versions": "bun test test/versions.test.ts",
-    "php-builds:install": "bun scripts/php-builds-install.ts",
     "example": "bun run example/index.ts",
     "typecheck": "bunx --package typescript@5.9.2 tsc -p tsconfig.json",
     "lint": "oxlint",
@@ -55,6 +53,7 @@
   "devDependencies": {
     "@php-wasm/node-8-3": "^3.1.51",
     "@types/bun": "latest",
+    "fast-check": "^4.9.0",
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0"
   },

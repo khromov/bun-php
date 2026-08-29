@@ -166,13 +166,57 @@ envelope is emitted as text.
 Only buffers the _user's_ code opened and left open still arrive in the envelope's `out` field, and
 `end()` releases them before the output held after the envelope, because PHP wrote them first.
 
-**Values cross by JSON, so `NaN`/`Infinity` only survive as a whole argument.** `encodeValue` turns a
-top-level one into PHP's `NAN`/`INF`, but `phpVar` encodes anything else through JSON, where they become
-`null`; `nonFinitePath` finds a nested one and throws instead of losing it silently — it carries a `WeakSet`,
-because a cycle would otherwise blow the stack before `phpVar` could report it as an encoding failure.
-Nested `undefined` is deliberately _not_ in that rule: it follows JSON, becoming `null` in an array and a
-dropped key in an object, which is what JavaScript callers already expect. `encodeArgs` builds its
+**Values cross by JSON, and one walk refuses everything JSON would silently destroy.** `jsonHazard` is
+that walk, and it covers two kinds. A nested non-finite number: `encodeValue` turns a _top-level_
+`NaN`/`Infinity` into PHP's `NAN`/`INF`, but `phpVar` encodes anything else through JSON, where it becomes
+`null`. And a lone UTF-16 surrogate, which is worse — `JSON.stringify` escapes it as the ASCII `\ud800`
+(a _valid_ pair it emits raw, so emoji are fine), PHP's `json_decode` rejects that escape outright, and the
+**whole** argument arrives as `null`; one bad code unit anywhere silently nulls the entire array. Object
+_keys_ are walked as well as values, because a bad key nulls the document just the same, and a bad key is
+re-escaped through `JSON.stringify` so the reported path stays printable. `String.prototype.isWellFormed()`
+is the test rather than a regex, and one walk carries both checks rather than two, because every argument of
+every call pays for it; the path is built on the way back out, so a clean value allocates no path strings.
+A post-hoc scan of the JSON was rejected: `phpVar` keeps its `JSON.stringify` internal, so scanning means
+serialising twice, a literal `\ud800` in the data is a false positive, and a byte offset is not the `.a.b`
+coordinate the treatment exists to give. The `WeakSet` is still there because a cycle would otherwise blow
+the stack before `phpVar` could report it as an encoding failure, and the walk stays inside the same `try`
+as `phpVar` so a throwing getter reads the same either side of it. A top-level function or symbol is
+refused up front for the same reason: `JSON.stringify` returns `undefined` for both, which `phpVar` base64s
+into an _empty_ document that `json_decode` reads as `null`. Nested `undefined` is deliberately _not_ in
+that rule: it follows JSON, becoming `null` in an array and a dropped key in an object, which is what
+JavaScript callers already expect, and a nested function or symbol follows it. Known gap: the walk reads
+values before `JSON.stringify` calls `toJSON()`, so a `toJSON()` that manufactures a hazard slips through —
+closing it needs a `replacer`, which forces `JSON.stringify` onto its slow path. `encodeArgs` builds its
 list by index rather than `.map`, which skips array holes and used to emit the invalid `f(, 1)`.
+
+**Property tests are where the boundary invariants live.** `test/property.test.ts` (fast-check) states the
+shape the example tests state one case of: `EnvelopeSplitter` chunked ≡ whole-string under an arbitrary
+n-way split, `encodeValue` round-tripping through a JS inversion of `phpVar`'s template, every
+`bindingNameFor` result being a legal binding, `generateModule`/`generateDts` output always transpiling,
+`docTypeToTs` totality, `parsePhp` uniqueness, `serialiseError`/`reviveError` round trips, and real values
+crossing into PHP and back. `BUN_PHP_FUZZ_RUNS` raises the run count; a failure prints the seed.
+Three generators are load-bearing and easy to break silently. The `EnvelopeSplitter` one must stay salted
+with `SENTINEL` and partial sentinels — a plain string never contains an eight-character NUL-delimited
+marker, so an unsalted generator tests only the passthrough path. The lone-surrogate one must _splice_ a
+surrogate in, because `fc.string()` is well-formed at every `unit`, `"binary"` included, so a filter
+starves. And the ones feeding `generateModule` must be unique by _binding_, not by name, because that is
+what `parsePhp` guarantees — `"  "` and an emoji both sanitise to `__phpFn___`. Real PHP calls are capped
+rather than following the knob: php-wasm runs out of file descriptors after roughly two thousand
+sequential requests on one instance.
+
+**A lookup on a plain object is a prototype hole, and three of them were real.** `ERROR_TYPES[err.name]`
+in `isolation.ts` found `Object.prototype.valueOf` for an error named `valueOf` and then crashed on
+`known.build`; `TS_TYPES[name]` in `php-types.ts` returned `Object.prototype` itself for a PHP type named
+`__proto__`, handing every caller an object where a type string was due. Both now go through a helper
+guarded by `Object.hasOwn`, the same way `runtime.ts` already looks up a PHP function name. Any new map
+keyed by a name that comes from user PHP needs the same treatment.
+
+**php-parser's lexer can hang, and `suppressErrors` does not cover it.** `scanMode` guards two shapes.
+A malformed attribute like `#[?` makes `tokenGetAll` _throw_ `Bad terminal sequence`, which the `try`
+catches. An _unterminated_ `#[` with a newline after it puts the attribute lexer in an infinite loop
+instead, which no `try` can catch — so `hasUnterminatedAttribute` spots it before the lexer runs. Both
+fall back to "code mode, no markup first", which leaves the snippet alone so PHP reports the real
+syntax error. That inline snippets could hang the process outright is what the property test found.
 
 **Every call is a fresh PHP request.** `buildCallScript` re-`require_once`s the module and the Composer
 autoloader each time because php-wasm resets request-scoped state (declared functions and autoloaders

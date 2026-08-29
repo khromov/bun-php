@@ -32,18 +32,52 @@ const TS_TYPES: Record<string, string> = {
   self: "Record<string, unknown>",
 };
 
+/** Split a converted type on its own ` | ` joiner, at bracket depth 0 only. */
+function members(type: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < type.length; i++) {
+    const ch = type[i]!;
+    if ("([{<".includes(ch)) depth++;
+    else if (")]}>".includes(ch)) depth = Math.max(0, depth - 1);
+    else if (depth === 0 && type.startsWith(" | ", i)) {
+      out.push(type.slice(start, i));
+      start = i + 3;
+      i += 2;
+    }
+  }
+  out.push(type.slice(start));
+  return out;
+}
+
 /**
- * Dedupe and join as a union; `any` swallows every other member. Parts are split on `|` first,
- * because one PHP alias can expand to several members — `scalar|string` is three, not four.
+ * Dedupe and join as a union; `any` swallows every other member. A part is split into its own
+ * members first, because one part can already be a union — one PHP alias expanding to several
+ * (`scalar|string` is three, not four), or `?int[]` having converted to `number[] | null`, which
+ * compared whole would keep both nulls in `?int[]|null`. Depth 0 only, so `(string | null)[]` and
+ * `Record<string, a | b>` stay one member.
  */
 function union(parts: string[]): string {
-  const atoms = parts.flatMap((part) =>
-    // Only a bare alternation splits: a parenthesised or suffixed part is one type, not several.
-    /^[^()[\]]+$/.test(part) ? part.split("|").map((atom) => atom.trim()) : [part],
-  );
-  const unique = [...new Set(atoms.filter(Boolean))];
+  const unique = [
+    ...new Set(
+      parts
+        .flatMap(members)
+        .map((atom) => atom.trim())
+        .filter(Boolean),
+    ),
+  ];
   if (unique.length === 0 || unique.includes("any")) return "any";
   return unique.join(" | ");
+}
+
+/**
+ * The TypeScript type for a PHP type name, if it is one we map. `Object.hasOwn` because a PHP name
+ * of `__proto__` or `toString` otherwise finds `Object.prototype` and is returned instead of a type.
+ */
+function tsType(name: string): string | undefined {
+  const key = name.toLowerCase();
+  return Object.hasOwn(TS_TYPES, key) ? TS_TYPES[key] : undefined;
 }
 
 /** Convert a php-parser type node into a TypeScript type. */
@@ -56,7 +90,7 @@ export function phpTypeToTs(node: TypeNode): string {
     case "intersectiontype":
       return "unknown";
     case "typereference":
-      return TS_TYPES[(node.name ?? "").toLowerCase()] ?? "any";
+      return tsType(node.name ?? "") ?? "any";
     // `json_encode` turns an object into its public properties.
     case "name":
       return "Record<string, unknown>";
@@ -76,38 +110,53 @@ export function parenthesised(type: string): string {
   return type.includes(" | ") ? `(${type})` : type;
 }
 
+/**
+ * How deep a docblock type may nest before it degrades to `any`. `docTypeToTs` and `convertDocPart`
+ * recurse into each other, and without a cap a pathological `@param` overflows the stack — a
+ * `RangeError` out of `parsePhp`, which promises to throw only `PhpParseError`.
+ */
+const MAX_DOC_DEPTH = 32;
+
 /** A docblock type (`int|null`, `?string`, `int[]`, `array<string, int>`) as a TypeScript type. */
-export function docTypeToTs(raw: string): string {
+export function docTypeToTs(raw: string, depth = 0): string {
+  if (depth > MAX_DOC_DEPTH) return "any";
   // Split on top-level `|` only: `array<int|string>` is one part.
-  return union(splitTopLevel(raw.trim(), "|").filter(Boolean).map(convertDocPart));
+  return union(
+    splitTopLevel(raw.trim(), "|")
+      .filter(Boolean)
+      .map((part) => convertDocPart(part, depth + 1)),
+  );
 }
 
-function convertDocPart(part: string): string {
+function convertDocPart(part: string, depth = 0): string {
+  if (depth > MAX_DOC_DEPTH) return "any";
   let text = part.trim();
 
-  if (text.startsWith("?")) return union([convertDocPart(text.slice(1)), "null"]);
+  if (text.startsWith("?")) return union([convertDocPart(text.slice(1), depth + 1), "null"]);
 
   let arrayDepth = 0;
   while (text.endsWith("[]")) {
     text = text.slice(0, -2);
     arrayDepth++;
   }
-  if (arrayDepth > 0) return parenthesised(convertDocPart(text)) + "[]".repeat(arrayDepth);
+  if (arrayDepth > 0) {
+    return parenthesised(convertDocPart(text, depth + 1)) + "[]".repeat(arrayDepth);
+  }
 
-  if (text.startsWith("(") && text.endsWith(")")) return docTypeToTs(text.slice(1, -1));
+  if (text.startsWith("(") && text.endsWith(")")) return docTypeToTs(text.slice(1, -1), depth + 1);
 
   const generic = /^(array|list|iterable)\s*<(.+)>$/i.exec(text);
   if (generic) {
     const args = splitTopLevel(generic[2] ?? "", ",").filter(Boolean);
     const value = args.length > 1 ? args[1] : args[0];
-    const inner = value ? docTypeToTs(value) : "PhpValue";
+    const inner = value ? docTypeToTs(value, depth + 1) : "PhpValue";
     // Integer keys describe a list; anything else is a string-keyed record.
     const keyed = args.length > 1 && !/^(int|integer)$/i.test(args[0] ?? "");
     return keyed ? `Record<string, ${inner}>` : `${parenthesised(inner)}[]`;
   }
 
   // Anything unknown is a class name.
-  return TS_TYPES[text.toLowerCase()] ?? "Record<string, unknown>";
+  return tsType(text) ?? "Record<string, unknown>";
 }
 
 /** Split on `separator` at depth 0 only, honouring `<>`, `()` and `{}`. */

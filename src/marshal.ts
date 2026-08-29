@@ -28,29 +28,61 @@ export function encodeArgs(args: readonly unknown[], label = "call"): string {
   ).join(", ");
 }
 
-/** Where a non-finite number hides inside `value`, if anywhere; `phpVar`'s JSON path turns it to null. */
-function nonFinitePath(value: unknown, path: string, seen: WeakSet<object>): string | null {
-  if (typeof value === "number") return Number.isFinite(value) ? null : path;
+/** What `phpVar`'s JSON path silently destroys, and the sentence that explains the loss. */
+const HAZARDS = {
+  number: {
+    what: "a non-finite number",
+    why: "NaN and Infinity survive only as a whole argument",
+  },
+  surrogate: {
+    what: "a lone UTF-16 surrogate",
+    why: "PHP's json_decode rejects the whole argument, which would arrive as null",
+  },
+} as const;
+
+type Hazard = { kind: keyof typeof HAZARDS; path: string };
+
+/**
+ * The first thing inside `value` that JSON would destroy, and where. The path is assembled on the way
+ * back out, so the usual case that finds nothing allocates no strings at all.
+ */
+function jsonHazard(value: unknown, seen: WeakSet<object>): Hazard | null {
+  // `JSON.stringify` escapes a lone surrogate as `\ud800`, which PHP's json_decode rejects outright.
+  if (typeof value === "string") {
+    return value.isWellFormed() ? null : { kind: "surrogate", path: "" };
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? null : { kind: "number", path: "" };
+  }
   if (value === null || typeof value !== "object") return null;
   // A cycle would recurse forever; leave it for `phpVar`, which reports it as an encoding failure.
   if (seen.has(value)) return null;
   seen.add(value);
 
   if (Array.isArray(value)) {
-    return value.reduce<string | null>(
-      (found, item, i) => found ?? nonFinitePath(item, `${path}[${i}]`, seen),
-      null,
-    );
+    for (let i = 0; i < value.length; i++) {
+      const found = jsonHazard(value[i], seen);
+      if (found) return { kind: found.kind, path: `[${i}]${found.path}` };
+    }
+    return null;
   }
-  return Object.entries(value).reduce<string | null>(
-    (found, [key, item]) => found ?? nonFinitePath(item, `${path}.${key}`, seen),
-    null,
-  );
+  const object = value as Record<string, unknown>;
+  for (const key of Object.keys(object)) {
+    // A bad key nulls the document too, and is re-escaped so the reported path stays printable.
+    if (!key.isWellFormed()) return { kind: "surrogate", path: `[${JSON.stringify(key)}]` };
+    const found = jsonHazard(object[key], seen);
+    if (found) return { kind: found.kind, path: `.${key}${found.path}` };
+  }
+  return null;
 }
 
 /** Encode one JS value as a PHP expression; `context` names it in error messages. */
 export function encodeValue(value: unknown, context: string): string {
   if (value === undefined) throw new TypeError(`${context} is undefined; pass null instead`);
+  // `JSON.stringify` yields `undefined` for both, which `phpVar` base64s into an empty document.
+  if (typeof value === "function" || typeof value === "symbol") {
+    throw new TypeError(`${context} is a ${typeof value}; pass null instead`);
+  }
   if (typeof value === "bigint") {
     if (value < MIN_INT64 || value > MAX_INT64) {
       throw new TypeError(`${context} (${value}n) overflows PHP's 64-bit int`);
@@ -62,13 +94,13 @@ export function encodeValue(value: unknown, context: string): string {
     return Number.isNaN(value) ? "NAN" : value > 0 ? "INF" : "-INF";
   }
   try {
-    // Only a top-level one has a PHP literal to become; nested, JSON would silently make it null.
-    // Inside the same `try` as `phpVar`, so a throwing getter reads the same either side of it.
-    const nested = nonFinitePath(value, "", new WeakSet());
-    if (nested !== null) {
-      throw new TypeError(
-        `${context} holds a non-finite number at ${nested}; NaN and Infinity survive only as a whole argument`,
-      );
+    // Only a top-level non-finite number has a PHP literal to become; anywhere else JSON loses it
+    // silently. Inside the same `try` as `phpVar`, so a throwing getter reads the same either side.
+    const hazard = jsonHazard(value, new WeakSet());
+    if (hazard) {
+      const { what, why } = HAZARDS[hazard.kind];
+      const at = hazard.path ? ` at ${hazard.path}` : "";
+      throw new TypeError(`${context} holds ${what}${at}; ${why}`);
     }
     return phpVar(value as never);
   } catch (err) {

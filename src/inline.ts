@@ -42,15 +42,51 @@ function tokenName(token: string | string[]): string {
 }
 
 /**
+ * Whether the snippet holds a `#[` attribute that never closes and has a newline after it — the one
+ * shape that sends php-parser's attribute lexer into an infinite loop rather than an error, so it
+ * cannot be caught, only avoided. Brackets inside strings and comments count here, which only makes
+ * the check more cautious, and the caller's fallback is safe either way.
+ */
+function hasUnterminatedAttribute(code: string): boolean {
+  for (let at = code.indexOf("#["); at !== -1; at = code.indexOf("#[", at + 2)) {
+    let depth = 0;
+    let closed = false;
+    let i = at + 1;
+    for (; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === "[") depth++;
+      else if (ch === "]" && --depth === 0) {
+        closed = true;
+        break;
+      }
+    }
+    if (!closed && code.indexOf("\n", at) !== -1) return true;
+  }
+  return false;
+}
+
+/**
  * Where the snippet leaves the parser when read as code, and whether an open tag turns up before any
  * code ran — a snippet that meant to start in markup. PHP's own lexer decides which `<?` and `?>` are
  * tags, so ones inside string literals, heredocs and comments cannot fool it. `tokenGetAll` has no
- * eval mode, so the `<?php ` prefix is what starts it in code mode.
+ * eval mode, so the `<?php ` prefix is what starts it in code mode. Exported so the property tests
+ * can state `asClosureBody`'s postcondition without booting wasm.
  */
-function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
+export function scanMode(code: string): { markupFirst: boolean; endsInCode: boolean } {
+  // An unterminated attribute hangs the lexer outright, so it never reaches the try below.
+  if (hasUnterminatedAttribute(code)) return { markupFirst: false, endsInCode: true };
+
   // The Engine constructor mutates its options object, so build a fresh one each time.
   const engine = new Engine({ parser: { suppressErrors: true, version: 805 } });
-  const tokens = engine.tokenGetAll(`<?php ${code}`) as (string | string[])[];
+  let tokens: (string | string[])[];
+  try {
+    tokens = engine.tokenGetAll(`<?php ${code}`) as (string | string[])[];
+  } catch {
+    // `suppressErrors` covers the parser, not the lexer, which throws outright on a malformed
+    // attribute (`#[?`). Leaving the snippet alone is right for both: PHP's own error names the
+    // real problem, where a php-parser internal would not.
+    return { markupFirst: false, endsInCode: true };
+  }
 
   let inCode = true;
   let markupFirst = false;
