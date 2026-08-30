@@ -37,6 +37,9 @@ CI (`.github/workflows/test.yml`) runs on PRs and `main`: typecheck, lint, `fmt:
 `demos/vendor.zip` (built by `demos:vendor:pack`) so CI needs neither Composer nor a system PHP —
 regenerate and recommit that zip whenever `demos/composer.lock` changes. Releases go out via
 `.github/workflows/release.yml`: release-please cuts the tag, then npm publishes over OIDC (no token).
+`CHANGELOG.md` is in `.oxfmtrc.json`'s `ignorePatterns` because release-please regenerates it in its own
+Markdown style — reformatting it only wins until the next release rewrites it, and `fmt:check` fails on
+every release PR in the meantime.
 
 ## Architecture
 
